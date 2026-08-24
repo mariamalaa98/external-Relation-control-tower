@@ -1,0 +1,15 @@
+{
+  "version": "1.0",
+  "appId": null,
+  "appDisplayName": "External Relations Control Tower",
+  "region": "prod",
+  "appType": "CodeApp",
+  "environmentId": "",
+  "description": "Governed external communications, SLA, and license/contract tracking",
+  "buildPath": "./dist",
+  "buildEntryPoint": "index.html",
+  "localAppUrl": "http://localhost:5173/",
+  "logoPath": "Default",
+  "connectionReferences": {},
+  "databaseReferences": {}
+}

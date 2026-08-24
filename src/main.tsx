@@ -7,8 +7,8 @@ async function boot() {
   let dataverseReady = false;
   try {
     const mod = await import("@microsoft/power-apps/app");
-    if (typeof mod.initialize === "function") {
-      await mod.initialize();
+    if (typeof mod.getContext === "function") {
+      await mod.getContext();
       dataverseReady = true;
     }
   } catch {

@@ -1,4 +1,5 @@
 ﻿:root{
+  --bronze-dp:#7E5C31;
   /* Andalusia Pulse palette */
   --espresso:#1C1411; --espresso-2:#241A15;
   --panel:#FFFFFF; --bronze-dp:#7E5C31; --bronze-ink:#7A5A2E;
@@ -264,7 +265,14 @@ h2.sec{font-size:14px;font-weight:600;margin:22px 0 10px}
   pointer-events:none;transition:.18s;box-shadow:0 8px 24px rgba(0,0,0,.22)}
 #toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
 
-button.nav,button.toptab{font-family:inherit;width:100%;text-align:left}
+button.nav{font-family:inherit;width:100%;text-align:left;background:transparent}
+button.toptab{font-family:inherit}
 button.toptab{width:auto}
 .banner{padding:10px 16px;margin-bottom:14px;border-radius:8px;font-size:12px;background:var(--infobg);color:var(--info);border:1px solid #D5DDE8}
 .banner.warn{background:var(--warnbg);color:var(--warn);border-color:#E8D9B0}
+.legal-row td:first-child{box-shadow:inset 3px 0 0 var(--bad)}
+.noresults td{color:var(--muted);text-align:center;padding:28px}
+#toast{position:fixed;bottom:26px;left:50%;transform:translateX(-50%) translateY(12px);background:var(--espresso);
+  color:#fff;padding:11px 20px;border-radius:8px;font-size:13px;font-weight:500;z-index:80;opacity:0;
+  pointer-events:none;transition:.18s}
+#toast.on{opacity:1;transform:translateX(-50%) translateY(0)}

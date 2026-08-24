@@ -1,5 +1,5 @@
-import { useMemo, useState, type FormEvent } from "react";
-import { BUS, CATS, PRIS } from "./data/types";
+﻿import { useMemo, useState, type FormEvent } from "react";
+import { BUS, CATS, PRIS, type Category, type Communication, type License, type Party, type Priority } from "./data/types";
 import {
   ME,
   TODAY,
@@ -19,35 +19,35 @@ import { DataTable, PageHead, catBadge, priBadge, slaBadge, statusBadge } from "
 
 const NAV = [
   { area: "ops", group: "COMMAND CENTER", items: [
-    { id: "dashboard", ico: "◫", text: "Executive Dashboard" },
-    { id: "pending", ico: "☑", text: "My Pending Actions" },
+    { id: "dashboard", ico: "â—«", text: "Executive Dashboard" },
+    { id: "pending", ico: "â˜‘", text: "My Pending Actions" },
   ]},
   { area: "ops", group: "COMMUNICATIONS", items: [
-    { id: "intake", ico: "✉", text: "Mailbox Intake" },
-    { id: "tracker", ico: "☰", text: "Communication Tracker" },
-    { id: "legal", ico: "⚖", text: "Legal Cases Notification" },
+    { id: "intake", ico: "âœ‰", text: "Mailbox Intake" },
+    { id: "tracker", ico: "â˜°", text: "Communication Tracker" },
+    { id: "legal", ico: "âš–", text: "Legal Cases Notification" },
   ]},
   { area: "comp", group: "LICENSES & CONTRACTS", items: [
-    { id: "licenses", ico: "🗎", text: "License & Contract Tracker" },
-    { id: "renewals", ico: "▦", text: "Renewal Calendar" },
+    { id: "licenses", ico: "ðŸ—Ž", text: "License & Contract Tracker" },
+    { id: "renewals", ico: "â–¦", text: "Renewal Calendar" },
   ]},
   { area: "comp", group: "REFERENCE DATA", items: [
-    { id: "parties", ico: "🏛", text: "External Party Master" },
-    { id: "archive", ico: "🗂", text: "Document Archive" },
+    { id: "parties", ico: "ðŸ›", text: "External Party Master" },
+    { id: "archive", ico: "ðŸ—‚", text: "Document Archive" },
   ]},
   { area: "gov", group: "ESCALATION & NOTIFICATIONS", items: [
-    { id: "escalation", ico: "▲", text: "Escalation Center" },
-    { id: "notifications", ico: "🔔", text: "Notification Center" },
+    { id: "escalation", ico: "â–²", text: "Escalation Center" },
+    { id: "notifications", ico: "ðŸ””", text: "Notification Center" },
   ]},
   { area: "gov", group: "ADMIN", items: [
-    { id: "admin", ico: "⚙", text: "Admin Configuration" },
+    { id: "admin", ico: "âš™", text: "Admin Configuration" },
   ]},
   { area: "gov", group: "REPORTS", items: [
-    { id: "reports", ico: "📈", text: "Power BI Reports" },
+    { id: "reports", ico: "ðŸ“ˆ", text: "Power BI Reports" },
   ]},
   { area: "gov", group: "AUDIT", items: [
-    { id: "auditComm", ico: "🔍", text: "Communication Audit" },
-    { id: "auditNotif", ico: "🔍", text: "Notification Audit" },
+    { id: "auditComm", ico: "ðŸ”", text: "Communication Audit" },
+    { id: "auditNotif", ico: "ðŸ”", text: "Notification Audit" },
   ]},
 ] as const;
 
@@ -58,10 +58,12 @@ const AREAS = [
 ] as const;
 
 type ScreenId = (typeof NAV)[number]["items"][number]["id"];
+type AreaId = (typeof AREAS)[number]["id"];
+const LATER: ScreenId[] = ["intake", "archive", "escalation", "notifications", "reports", "auditComm", "auditNotif"];
 
 export default function App({ dataverseReady }: { dataverseReady: boolean }) {
   const db = useStore();
-  const [area, setArea] = useState<(typeof AREAS)[number]["id"]>("ops");
+  const [area, setArea] = useState<AreaId>("ops");
   const [screen, setScreen] = useState<ScreenId>("dashboard");
   const [q, setQ] = useState("");
   const [toast, setToast] = useState("");
@@ -71,6 +73,7 @@ export default function App({ dataverseReady }: { dataverseReady: boolean }) {
     const found = NAV.find((g) => g.items.some((i) => i.id === id));
     if (found) setArea(found.area);
     setScreen(id);
+    setQ("");
   }
   function ping(msg: string) {
     setToast(msg);
@@ -78,13 +81,16 @@ export default function App({ dataverseReady }: { dataverseReady: boolean }) {
   }
 
   const openComms = db.comms.filter((c) => c.status !== "Closed");
+  const mine = openComms.filter((c) => c.owner === ME);
   const breached = openComms.filter((c) => slaState(c) === "Breached");
-  const expiring = db.docs.filter((d) => docState(d) === "Expiring" || docState(d) === "Expired");
+  const expiring = db.docs.filter((d) => {
+    const s = docState(d);
+    return s === "Expiring" || s === "Expired";
+  });
   const closed = db.comms.filter((c) => c.status === "Closed");
   const compliance = closed.length
     ? Math.round((closed.filter((c) => slaState(c) === "Within").length / closed.length) * 100)
     : 0;
-
   const catCounts = CATS.map((cat) => ({ cat, n: db.comms.filter((c) => c.cat === cat).length }));
   const maxCat = Math.max(...catCounts.map((x) => x.n), 1);
 
@@ -94,15 +100,22 @@ export default function App({ dataverseReady }: { dataverseReady: boolean }) {
         <span className="brand">Andalusia Pulse</span>
         <div className="toptabs">
           {AREAS.map((a) => (
-            <button key={a.id} className={`toptab${area === a.id ? " on" : ""}`} onClick={() => { setArea(a.id); setScreen(NAV.find((g) => g.area === a.id)!.items[0].id); }}>
+            <button
+              key={a.id}
+              className={`toptab${area === a.id ? " on" : ""}`}
+              onClick={() => {
+                setArea(a.id);
+                setScreen(NAV.find((g) => g.area === a.id)!.items[0].id);
+              }}
+            >
               {a.label}
             </button>
           ))}
         </div>
         <div className="hdr-right">
-          <span className="hdr-icon">⌕</span>
-          <span className="hdr-icon" onClick={() => setModal("comm")}>＋</span>
-          <span className="hdr-icon">⚙</span>
+          <span className="hdr-icon">âŒ•</span>
+          <span className="hdr-icon" onClick={() => setModal("comm")}>ï¼‹</span>
+          <span className="hdr-icon">âš™</span>
           <div className="avatar">HG</div>
         </div>
       </header>
@@ -130,21 +143,21 @@ export default function App({ dataverseReady }: { dataverseReady: boolean }) {
         <main>
           {!dataverseReady && (
             <div className="banner warn">
-              Running on prototype data. After <b>pa app init</b> and <b>pa app add data-source</b>, screens will read your <b>erc_</b> Dataverse tables.
+              Running on prototype data. After <b>pa app init</b> and adding Dataverse tables, these screens will use your <b>erc_</b> records.
             </div>
           )}
 
           {screen === "dashboard" && (
             <>
               <PageHead title="Executive Dashboard" sub={`${db.comms.length} communications · ${db.docs.length} documents`}>
-                <button className="btn btn-outline" onClick={() => ping("Refreshed")}>Refresh</button>
+                <button className="btn btn-outline" type="button" onClick={() => ping("Refreshed")}>Refresh</button>
               </PageHead>
               <div className="kpis">
-                <div className="kpi" style={{ ["--acc" as string]: "var(--bronze)" }} onClick={() => go("tracker")}><div className="l">Total Communications</div><div className="v">{db.comms.length}</div><div className="d">All categories</div></div>
-                <div className="kpi" style={{ ["--acc" as string]: "var(--info)" }} onClick={() => go("pending")}><div className="l">Open</div><div className="v">{openComms.length}</div><div className="d">Awaiting action</div></div>
-                <div className="kpi" style={{ ["--acc" as string]: "var(--bad)" }} onClick={() => go("tracker")}><div className="l">Overdue</div><div className="v">{breached.length}</div><div className="d">SLA breached</div></div>
-                <div className="kpi" style={{ ["--acc" as string]: "var(--ok)" }}><div className="l">SLA Compliance</div><div className="v">{compliance}%</div><div className="d">Closed records</div></div>
-                <div className="kpi" style={{ ["--acc" as string]: "var(--warn)" }} onClick={() => go("renewals")}><div className="l">Renewals Due</div><div className="v">{expiring.length}</div><div className="d">Within 90 days / expired</div></div>
+                <Kpi acc="var(--bronze)" label="Total Communications" value={db.comms.length} detail="All categories" onClick={() => go("tracker")} />
+                <Kpi acc="var(--info)" label="Open" value={openComms.length} detail="Awaiting action" onClick={() => go("pending")} />
+                <Kpi acc="var(--bad)" label="Overdue" value={breached.length} detail="SLA breached" onClick={() => go("tracker")} />
+                <Kpi acc="var(--ok)" label="SLA Compliance" value={`${compliance}%`} detail="Closed records" />
+                <Kpi acc="var(--warn)" label="Renewals Due" value={expiring.length} detail="Within 90 days / expired" onClick={() => go("renewals")} />
               </div>
               <div className="two">
                 <div className="card chartcard">
@@ -162,7 +175,7 @@ export default function App({ dataverseReady }: { dataverseReady: boolean }) {
                 </div>
                 <div className="card chartcard">
                   <h3>SLA mix</h3>
-                  <div className="cs">Open items by SLA state</div>
+                  <div className="cs">Closed-item compliance {compliance}%</div>
                   <div className="donutwrap">
                     <div className="donut" />
                     <div className="legend">
@@ -178,17 +191,17 @@ export default function App({ dataverseReady }: { dataverseReady: boolean }) {
 
           {screen === "pending" && (
             <>
-              <PageHead title="My Pending Actions" sub={`${openComms.filter((c) => c.owner === ME).length} open items owned by ${ME}`}>
-                <button className="btn btn-primary" onClick={() => setModal("comm")}>New Communication</button>
+              <PageHead title="My Pending Actions" sub={`${mine.length} open items owned by ${ME}`}>
+                <button className="btn btn-primary" type="button" onClick={() => setModal("comm")}>New Communication</button>
               </PageHead>
-              <CommTable rows={openComms.filter((c) => c.owner === ME)} q={q} setQ={setQ} />
+              <CommTable rows={mine} q={q} setQ={setQ} />
             </>
           )}
 
           {screen === "tracker" && (
             <>
               <PageHead title="Communication Tracker" sub={`${db.comms.length} records`}>
-                <button className="btn btn-primary" onClick={() => setModal("comm")}>New Communication</button>
+                <button className="btn btn-primary" type="button" onClick={() => setModal("comm")}>New Communication</button>
               </PageHead>
               <CommTable rows={db.comms} q={q} setQ={setQ} />
             </>
@@ -204,17 +217,29 @@ export default function App({ dataverseReady }: { dataverseReady: boolean }) {
           {screen === "parties" && (
             <>
               <PageHead title="External Party Master" sub={`${db.parties.length} parties`}>
-                <button className="btn btn-primary" onClick={() => setModal("party")}>New Party</button>
+                <button className="btn btn-primary" type="button" onClick={() => setModal("party")}>New Party</button>
               </PageHead>
               <div className="filters">
                 <input placeholder="Search party, domain, email" value={q} onChange={(e) => setQ(e.target.value)} />
               </div>
               <DataTable
                 cols={["Party", "Category", "Email", "Domain", "Business Unit", "Default Owner", "Criticality", "Status", "Comms"]}
-                rows={db.parties.filter((p) => `${p.name} ${p.domain} ${p.email}`.toLowerCase().includes(q.toLowerCase())).map((p) => ({
-                  key: p.id,
-                  cells: [p.name, catBadge(p.category), p.email, p.domain, p.bu, p.owner, priBadge(p.criticality === "High" ? "High" : p.criticality === "Medium" ? "Medium" : "Low"), statusBadge(p.status), db.comms.filter((c) => c.party === p.name).length],
-                }))}
+                rows={db.parties
+                  .filter((p) => `${p.name} ${p.domain} ${p.email}`.toLowerCase().includes(q.toLowerCase()))
+                  .map((p) => ({
+                    key: p.id,
+                    cells: [
+                      p.name,
+                      catBadge(p.category),
+                      p.email,
+                      p.domain,
+                      p.bu,
+                      p.owner,
+                      priBadge(p.criticality === "Low" ? "Low" : p.criticality === "Medium" ? "Medium" : "High"),
+                      statusBadge(p.status),
+                      db.comms.filter((c) => c.party === p.name).length,
+                    ],
+                  }))}
               />
             </>
           )}
@@ -222,7 +247,7 @@ export default function App({ dataverseReady }: { dataverseReady: boolean }) {
           {screen === "licenses" && (
             <>
               <PageHead title="License & Contract Tracker" sub={`${db.docs.length} documents`}>
-                <button className="btn btn-primary" onClick={() => setModal("doc")}>New Document</button>
+                <button className="btn btn-primary" type="button" onClick={() => setModal("doc")}>New Document</button>
               </PageHead>
               <DocTable rows={db.docs} q={q} setQ={setQ} />
             </>
@@ -248,10 +273,13 @@ export default function App({ dataverseReady }: { dataverseReady: boolean }) {
             </>
           )}
 
-          {["intake", "archive", "escalation", "notifications", "reports", "auditComm", "auditNotif"].includes(screen) && (
+          {LATER.includes(screen) && (
             <>
-              <PageHead title={NAV.flatMap((g) => g.items).find((i) => i.id === screen)?.text || ""} sub="Phase 2 screen — mailbox, files, escalation and notification tables come next" />
-              <div className="ph">This screen is in the prototype. Phase 1 uses Communication, External Party, SLA, and License & Contract only.</div>
+              <PageHead
+                title={NAV.flatMap((g) => [...g.items]).find((i) => i.id === screen)?.text || ""}
+                sub="Phase 2 â€” mailbox, archive, escalation and notification tables"
+              />
+              <div className="ph">Phase 1 uses Communication, External Party, SLA, and License & Contract only.</div>
             </>
           )}
         </main>
@@ -264,9 +292,9 @@ export default function App({ dataverseReady }: { dataverseReady: boolean }) {
             <div className="dh">
               <div>
                 <div className="t">{modal === "party" ? "New External Party" : modal === "doc" ? "New Document" : "New Communication"}</div>
-                <div className="s">Saved into the local store until Dataverse is connected</div>
+                <div className="s">Saved locally until Dataverse is connected</div>
               </div>
-              <button className="x" onClick={() => setModal(null)}>✕</button>
+              <button className="x" type="button" onClick={() => setModal(null)}>âœ•</button>
             </div>
             {modal === "party" && <PartyForm onCancel={() => setModal(null)} onSave={() => { setModal(null); ping("Party created"); }} />}
             {modal === "comm" && <CommForm onCancel={() => setModal(null)} onSave={() => { setModal(null); ping("Communication created"); }} />}
@@ -279,7 +307,17 @@ export default function App({ dataverseReady }: { dataverseReady: boolean }) {
   );
 }
 
-function CommTable({ rows, q, setQ }: { rows: ReturnType<typeof useStore>["comms"]; q: string; setQ: (v: string) => void }) {
+function Kpi({ acc, label, value, detail, onClick }: { acc: string; label: string; value: number | string; detail: string; onClick?: () => void }) {
+  return (
+    <div className="kpi" style={{ ["--acc" as string]: acc }} onClick={onClick}>
+      <div className="l">{label}</div>
+      <div className="v">{value}</div>
+      <div className="d">{detail}</div>
+    </div>
+  );
+}
+
+function CommTable({ rows, q, setQ }: { rows: Communication[]; q: string; setQ: (v: string) => void }) {
   const filtered = useMemo(
     () => rows.filter((r) => `${r.id} ${r.party} ${r.subj} ${r.owner}`.toLowerCase().includes(q.toLowerCase())),
     [rows, q]
@@ -313,7 +351,7 @@ function CommTable({ rows, q, setQ }: { rows: ReturnType<typeof useStore>["comms
   );
 }
 
-function DocTable({ rows, q, setQ }: { rows: ReturnType<typeof useStore>["docs"]; q: string; setQ: (v: string) => void }) {
+function DocTable({ rows, q, setQ }: { rows: License[]; q: string; setQ: (v: string) => void }) {
   const filtered = useMemo(
     () => rows.filter((r) => `${r.id} ${r.name} ${r.party}`.toLowerCase().includes(q.toLowerCase())),
     [rows, q]
@@ -335,7 +373,7 @@ function DocTable({ rows, q, setQ }: { rows: ReturnType<typeof useStore>["docs"]
             r.party,
             <span className="mono" key="exp">{r.expiry}</span>,
             daysBetween(TODAY, r.expiry),
-            priBadge(r.risk === "High" ? "High" : r.risk === "Medium" ? "Medium" : "Low"),
+            priBadge(r.risk === "Low" ? "Low" : r.risk === "Medium" ? "Medium" : "High"),
             statusBadge(docState(r)),
             r.owner,
           ],
@@ -351,19 +389,18 @@ function PartyForm({ onCancel, onSave }: { onCancel: () => void; onSave: () => v
     e.preventDefault();
     const f = new FormData(e.currentTarget);
     addParty({
-      id: `P${db.parties.length + 1}`,
+      id: `P${db.parties.length + 11}`,
       name: String(f.get("name")),
-      category: String(f.get("category")) as PartyFormCat,
+      category: String(f.get("category")) as Category,
       email: String(f.get("email")),
       domain: String(f.get("domain")),
       bu: String(f.get("bu")),
       owner: String(f.get("owner")),
-      criticality: String(f.get("crit")) as "High" | "Medium" | "Low",
+      criticality: String(f.get("crit")) as Party["criticality"],
       status: "Active",
     });
     onSave();
   }
-  type PartyFormCat = (typeof CATS)[number];
   return (
     <form onSubmit={submit}>
       <div className="db">
@@ -390,17 +427,17 @@ function CommForm({ onCancel, onSave }: { onCancel: () => void; onSave: () => vo
   function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const f = new FormData(e.currentTarget);
-    const cat = String(f.get("cat"));
-    const pri = String(f.get("pri"));
+    const cat = String(f.get("cat")) as Category;
+    const pri = String(f.get("pri")) as Priority;
     const rec = String(f.get("rec"));
     addComm({
       id: nextCommId(),
       party: String(f.get("party")),
-      cat: cat as (typeof CATS)[number],
+      cat,
       subj: String(f.get("subj")),
       owner: String(f.get("owner")),
       sup: String(f.get("sup")),
-      pri: pri as (typeof PRIS)[number],
+      pri,
       rec,
       due: addDays(rec, slaDays(cat, pri)),
       status: "Open",
@@ -423,7 +460,7 @@ function CommForm({ onCancel, onSave }: { onCancel: () => void; onSave: () => vo
           <div><label>Business unit</label><select name="bu">{BUS.map((b) => <option key={b}>{b}</option>)}</select></div>
           <div className="wide"><label>Case reference (legal)</label><input name="caseRef" /></div>
         </div>
-        <div className="note">Due date is calculated from the SLA matrix for the chosen category and priority — you do not enter it.</div>
+        <div className="note">Due date is calculated from the SLA matrix for the chosen category and priority.</div>
       </div>
       <div className="df">
         <button className="btn btn-primary" type="submit">Create Record</button>
@@ -440,13 +477,13 @@ function DocForm({ onCancel, onSave }: { onCancel: () => void; onSave: () => voi
     const f = new FormData(e.currentTarget);
     addDoc({
       id: nextDocId(),
-      type: String(f.get("type")) as "License" | "Contract" | "Permit",
+      type: String(f.get("type")) as License["type"],
       name: String(f.get("name")),
       party: String(f.get("party")),
       auth: String(f.get("auth")),
       issue: String(f.get("issue")),
       expiry: String(f.get("expiry")),
-      risk: String(f.get("risk")) as "High" | "Medium" | "Low",
+      risk: String(f.get("risk")) as License["risk"],
       owner: String(f.get("owner")),
       bu: String(f.get("bu")),
     });
@@ -474,3 +511,4 @@ function DocForm({ onCancel, onSave }: { onCancel: () => void; onSave: () => voi
     </form>
   );
 }
+
