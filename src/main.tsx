@@ -1,3 +1,4 @@
+import { hydrate } from "./data/store";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App.tsx";
@@ -15,9 +16,11 @@ async function boot() {
     dataverseReady = false;
   }
 
+  await hydrate(dataverseReady);
+
   createRoot(document.getElementById("root")!).render(
     <StrictMode>
-      <App dataverseReady={dataverseReady} />
+      <App />
     </StrictMode>
   );
 }

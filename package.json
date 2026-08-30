@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "push": "pa app push --non-interactive"
   },
   "dependencies": {
     "@microsoft/power-apps": "^1.2.5",

@@ -1,15 +1,76 @@
 {
   "version": "1.0",
-  "appId": null,
+  "appId": "dd69ba9f-0c04-49f7-8da3-f1aa49aaaa3d",
   "appDisplayName": "External Relations Control Tower",
   "region": "prod",
   "appType": "CodeApp",
-  "environmentId": "",
+  "environmentId": "9ce6fb09-5b63-e9f4-9185-b707b4b3425e",
   "description": "Governed external communications, SLA, and license/contract tracking",
   "buildPath": "./dist",
   "buildEntryPoint": "index.html",
   "localAppUrl": "http://localhost:5173/",
   "logoPath": "Default",
   "connectionReferences": {},
-  "databaseReferences": {}
+  "databaseReferences": {
+    "default.cds": {
+      "dataSources": {
+        "communications": {
+          "entitySetName": "erc_communications",
+          "logicalName": "erc_communication",
+          "isHidden": false
+        },
+        "externalpartymasters": {
+          "entitySetName": "erc_externalparties",
+          "logicalName": "erc_externalparty",
+          "isHidden": false
+        },
+        "licenseandcontracts": {
+          "entitySetName": "erc_licenseandcontracts",
+          "logicalName": "erc_licenseandcontract",
+          "isHidden": false
+        },
+        "slas": {
+          "entitySetName": "erc_sla2s",
+          "logicalName": "erc_sla2",
+          "isHidden": false
+        },
+        "businessunits": {
+          "entitySetName": "businessunits",
+          "logicalName": "businessunit",
+          "isHidden": false
+        },
+        "departments": {
+          "entitySetName": "cr603_chklst_departmentses",
+          "logicalName": "cr603_chklst_departments",
+          "isHidden": false
+        },
+        "teams": {
+          "entitySetName": "teams",
+          "logicalName": "team",
+          "isHidden": false
+        },
+        "users": {
+          "entitySetName": "systemusers",
+          "logicalName": "systemuser",
+          "isHidden": false
+        },
+        "renewals": {
+          "entitySetName": "erc_renewals",
+          "logicalName": "erc_renewal",
+          "isHidden": false
+        },
+        "emails": {
+          "entitySetName": "emails",
+          "logicalName": "email",
+          "isHidden": false
+        },
+        "activityparties": {
+          "entitySetName": "activityparties",
+          "logicalName": "activityparty",
+          "isHidden": false
+        }
+      },
+      "environmentVariableName": ""
+    }
+  }
 }
