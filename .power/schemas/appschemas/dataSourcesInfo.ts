@@ -5,6 +5,13 @@
  */
 
 export const dataSourcesInfo = {
+  "activitymimeattachments": {
+    "tableId": "",
+    "version": "",
+    "primaryKey": "activitymimeattachmentid",
+    "dataSourceType": "Dataverse",
+    "apis": {}
+  },
   "activityparties": {
     "tableId": "",
     "version": "",

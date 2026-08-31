@@ -1,0 +1,85 @@
+{
+  "name": "activitymimeattachment",
+  "title": "Email Attachments",
+  "schema": {
+    "type": "array",
+    "items": {
+      "type": "object",
+      "x-ms-dataverse-entity": true,
+      "x-ms-dataverse-entityset": "activitymimeattachments",
+      "x-ms-dataverse-primary-id": "activitymimeattachmentid",
+      "x-ms-dataverse-primary-name": "filename",
+      "properties": {
+        "activitymimeattachmentid": {
+          "type": "string",
+          "title": "Activity Mime Attachment",
+          "x-ms-dataverse-attribute": "activitymimeattachmentid",
+          "x-ms-dataverse-type": "UniqueidentifierType",
+          "x-ms-schema-name": "ActivityMimeAttachmentId",
+          "x-ms-dataverse-primary-id": true,
+          "required": true,
+          "x-ms-keyType": "primary"
+        },
+        "attachmentcontentid": {
+          "type": "string",
+          "title": "Content Id",
+          "x-ms-dataverse-attribute": "attachmentcontentid",
+          "x-ms-dataverse-type": "StringType",
+          "x-ms-schema-name": "AttachmentContentId"
+        },
+        "body": {
+          "type": "string",
+          "title": "Body",
+          "x-ms-dataverse-attribute": "body",
+          "x-ms-dataverse-type": "MemoType",
+          "x-ms-schema-name": "Body"
+        },
+        "filename": {
+          "type": "string",
+          "title": "File Name",
+          "x-ms-dataverse-attribute": "filename",
+          "x-ms-dataverse-type": "StringType",
+          "x-ms-schema-name": "FileName",
+          "x-ms-dataverse-primary-name": true
+        },
+        "filesize": {
+          "type": "string",
+          "title": "File Size (Bytes)",
+          "x-ms-dataverse-attribute": "filesize",
+          "x-ms-dataverse-type": "IntegerType",
+          "x-ms-schema-name": "FileSize",
+          "x-ms-read-only": true
+        },
+        "mimetype": {
+          "type": "string",
+          "title": "Mime Type",
+          "x-ms-dataverse-attribute": "mimetype",
+          "x-ms-dataverse-type": "StringType",
+          "x-ms-schema-name": "MimeType"
+        },
+        "objectid": {
+          "type": "string",
+          "title": "Regarding",
+          "x-ms-dataverse-attribute": "objectid",
+          "x-ms-dataverse-type": "LookupType",
+          "x-ms-schema-name": "ObjectId"
+        },
+        "objecttypecode": {
+          "type": "string",
+          "title": "Object Type",
+          "x-ms-dataverse-attribute": "objecttypecode",
+          "x-ms-dataverse-type": "EntityNameType",
+          "x-ms-schema-name": "ObjectTypeCode"
+        },
+        "subject": {
+          "type": "string",
+          "title": "Subject",
+          "x-ms-dataverse-attribute": "subject",
+          "x-ms-dataverse-type": "StringType",
+          "x-ms-schema-name": "Subject"
+        }
+      },
+      "required": ["activitymimeattachmentid"]
+    }
+  }
+}

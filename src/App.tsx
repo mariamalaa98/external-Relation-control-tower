@@ -371,7 +371,7 @@ export default function App() {
                 </FilterField>
               </div>
               <DataTable
-                cols={["Party", "Category", "Email", "Domain", "Business Unit", "Default Owner", "Criticality", "Status", "Comms"]}
+                cols={["Party", "Category", "Email", "Domain", "Business Unit", "Criticality", "Status", "Comms"]}
                 rows={db.parties
                   .filter((p) => `${p.name} ${p.domain} ${p.email}`.toLowerCase().includes(q.toLowerCase()))
                   .map((p) => ({
@@ -381,8 +381,7 @@ export default function App() {
                       catBadge(p.category),
                       p.email,
                       p.domain,
-                      p.bu,
-                      p.owner,
+                      p.bu || "—",
                       priBadge(p.criticality),
                       statusBadge(p.status),
                       db.comms.filter((c) => c.party === p.name || c.partyId === p.id).length,
@@ -1081,21 +1080,17 @@ function Modals({
           if (!canManualEscalate(r)) return onFail("This communication is already escalated");
           const f = new FormData(e.currentTarget);
           const reason = String(f.get("reason") || "").trim();
-          const closedBy = String(f.get("closedBy") || "").trim();
-          const closureComment = String(f.get("closureComment") || "").trim();
           if (!reason) return onFail("Escalation reason is required");
-          void go(`${r.id} escalated`, () => escalateManually(r.id, reason, ME, { closedBy, closureComment }));
+          void go(`${r.id} escalated`, () => escalateManually(r.id, reason, ME));
         }}>
           <div className="form">
             <div className="wide">
               <label>Escalation reason *</label>
               <textarea name="reason" rows={3} required minLength={3} placeholder="Why is this being escalated?" />
             </div>
-            <div><label>Closed By</label><input name="closedBy" defaultValue={r.closedBy || ME} /></div>
-            <div className="wide"><label>Closure comment</label><textarea name="closureComment" rows={2} defaultValue={r.closureComment || ""} placeholder="Optional" /></div>
           </div>
           <div className="note">
-            This writes <b>Is Manually Escalated = Yes</b> and <b>Is Escalated = Yes</b> so the manual flow runs once and cannot be sent again. Escalation reason is required.
+            This writes <b>Is Escalated = Yes</b> so the manual flow runs once and cannot be sent again. Escalation reason is required.
           </div>
           <div className="df" style={{ margin: "16px -20px -20px" }}>
             <button className="btn btn-primary" type="submit" disabled={busy}>Run manual escalation</button>
@@ -1208,7 +1203,7 @@ function PartyForm({ onCancel, onSave }: { onCancel: () => void; onSave: () => v
         domain: String(f.get("domain")),
         bu: unit?.name || String(f.get("bu") || ""),
         buId: unit?.id || buId || undefined,
-        owner: String(f.get("owner")),
+        owner: ME,
         criticality: String(f.get("crit")) as "High" | "Medium" | "Low",
       });
       onSave();
@@ -1230,7 +1225,6 @@ function PartyForm({ onCancel, onSave }: { onCancel: () => void; onSave: () => v
             {units.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
           </select>
         </div>
-        <div><label>Default owner</label><input name="owner" defaultValue={ME} /></div>
       </div>
       <div className="df" style={{ margin: "16px -20px -20px" }}>
         <button className="btn btn-primary" type="submit" disabled={busy}>Create Party</button>

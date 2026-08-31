@@ -68,6 +68,11 @@
           "entitySetName": "activityparties",
           "logicalName": "activityparty",
           "isHidden": false
+        },
+        "activitymimeattachments": {
+          "entitySetName": "activitymimeattachments",
+          "logicalName": "activitymimeattachment",
+          "isHidden": false
         }
       },
       "environmentVariableName": ""

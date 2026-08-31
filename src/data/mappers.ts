@@ -160,6 +160,19 @@ export function needsEvidence(cat: Category) {
   return cat === "Government" || cat === "Legal" || cat === "Regulatory";
 }
 
+function lookupDisplay(row: object, logical: string, formattedName?: string) {
+  const rec = row as Record<string, unknown>;
+  const nested = rec[logical];
+  if (nested && typeof nested === "object" && nested !== null && "name" in nested) {
+    const name = (nested as { name?: string }).name;
+    if (name) return name;
+  }
+  const odata = rec[`_${logical}_value@OData.Community.Display.V1.FormattedValue`];
+  if (typeof odata === "string" && odata.trim()) return odata;
+  if (formattedName?.trim()) return formattedName;
+  return "";
+}
+
 export function mapParty(row: Erc_externalparties): Party {
   const crit = cleanLabel(row.erc_defaultpriorityname || row.erc_priorityname);
   return {
@@ -168,7 +181,7 @@ export function mapParty(row: Erc_externalparties): Party {
     category: asCategory(row.erc_categoryname),
     email: row.erc_officialemail || "",
     domain: (row.erc_domain || senderDomain(row.erc_officialemail || "")).toLowerCase(),
-    bu: row.erc_businessunitname || "",
+    bu: lookupDisplay(row, "erc_businessunit", row.erc_businessunitname) || row.owningbusinessunitname || "",
     buId: row._erc_businessunit_value,
     owner: row.erc_defaultownername || row.owneridname || "",
     criticality: crit === "Low" || crit === "Medium" ? crit : "High",

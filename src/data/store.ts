@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { SEED } from "./seed";
-import type { BusinessUnitRef, Category, CommStatus, Communication, EvidenceFile, IntakeEmail, License, Party, Priority, SlaRule, Store, ThreadEmail } from "./types";
+import type { BusinessUnitRef, Category, CommStatus, Communication, EmailAttachment, EvidenceFile, IntakeEmail, License, Party, Priority, SlaRule, Store, ThreadEmail } from "./types";
 import {
   addDays,
   asPriority,
@@ -60,6 +60,7 @@ import { SystemusersService } from "../generated/services/SystemusersService";
 import type { Erc_communicationsBase } from "../generated/models/Erc_communicationsModel";
 import type { Erc_externalpartiesBase } from "../generated/models/Erc_externalpartiesModel";
 import type { Erc_licenseandcontractsBase } from "../generated/models/Erc_licenseandcontractsModel";
+import { attachmentsFromEmailRecord, emailGetOptions, fetchAttachmentContent, listAttachmentsForEmails, mimeFromFileName } from "./emailAttachments";
 
 let store: Store = { ...structuredClone(SEED), ready: false };
 const listeners = new Set<() => void>();
@@ -296,9 +297,23 @@ function mapThreadEmail(email: Emails): ThreadEmail {
     body: parts.body,
     quoted: parts.quoted,
     attachmentCount: email.attachmentcount || 0,
+    attachments: [],
     isReply: !!email._parentactivityid_value || /^(re|fw|fwd)\s*:/i.test(subject),
     conversationIndex: email.conversationindex,
   };
+}
+
+function localAttachments(comm: Communication, mailId: string): EmailAttachment[] {
+  return store.files
+    .filter((f) => f.rel === comm.id || f.rel === comm.recordId)
+    .map((f) => ({
+      id: `${mailId}-${f.id}`,
+      name: f.name,
+      mimeType: mimeFromFileName(f.name),
+      size: 0,
+      emailId: mailId,
+      localBody: `Attachment: ${f.name}\nDate: ${f.date}\nBy: ${f.by}\n\nThis is a readable copy of the file attached to the email.`,
+    }));
 }
 
 function threadKey(comm: Communication) {
@@ -330,6 +345,7 @@ function localThread(comm: Communication): ThreadEmail[] {
     body: "",
     quoted: "",
     attachmentCount: 0,
+    attachments: [],
     isReply: !!m.inReplyTo || m.threadAction === "Attached",
     conversationIndex: m.conversationIndex,
   }));
@@ -345,9 +361,14 @@ function localThread(comm: Communication): ThreadEmail[] {
       body: comm.description || comm.respAction || "",
       quoted: "",
       attachmentCount: 0,
+      attachments: [],
       isReply: false,
       conversationIndex: comm.conversationIndex,
     });
+  }
+  const files = localAttachments(comm, mapped[0].id);
+  if (files.length) {
+    mapped[0] = { ...mapped[0], attachments: files, attachmentCount: files.length };
   }
   return mapped;
 }
@@ -391,16 +412,46 @@ export async function loadCommThread(comm: Communication): Promise<ThreadEmail[]
     }
   }
   const emails = await Promise.all((rows).map(async (email) => {
+    let full = email;
     try {
-      const full = await EmailsService.get(email.activityid);
-      return mapThreadEmail(full.data || email);
+      const loaded = await EmailsService.get(email.activityid, emailGetOptions);
+      full = loaded.data || email;
     } catch {
-      return mapThreadEmail(email);
+      try {
+        const loaded = await EmailsService.get(email.activityid);
+        full = loaded.data || email;
+      } catch {
+        full = email;
+      }
     }
+    const mapped = mapThreadEmail(full);
+    const attachments = attachmentsFromEmailRecord(full, mapped.id);
+    if (attachments.length) {
+      mapped.attachments = attachments;
+      mapped.attachmentCount = attachments.length;
+    }
+    return mapped;
   }));
+  const missing = emails.filter((mail) => mail.attachmentCount > 0 && !(mail.attachments && mail.attachments.length));
+  if (missing.length) {
+    try {
+      const grouped = await listAttachmentsForEmails(missing.map((mail) => mail.id));
+      for (const mail of missing) {
+        const attachments = grouped.get(mail.id) || [];
+        mail.attachments = attachments;
+        if (attachments.length) mail.attachmentCount = attachments.length;
+      }
+    } catch {
+      /* keep attachment counts from the email row */
+    }
+  }
   store = { ...store, threadByComm: { ...store.threadByComm, [key]: emails } };
   emit();
   return emails;
+}
+
+export async function loadEmailAttachmentFile(att: EmailAttachment) {
+  return fetchAttachmentContent(att);
 }
 
 export async function hydrate(useDataverse: boolean) {
@@ -424,14 +475,17 @@ export async function hydrate(useDataverse: boolean) {
       Erc_renewalsService.getAll({ top: 250, orderBy: ["erc_duedate asc"] }),
       BusinessunitsService.getAll({ top: 250, orderBy: ["name asc"] }).catch(() => ({ data: [] as { businessunitid: string; name: string }[] })),
     ]);
-    const mappedParties = (parties.data || []).map(mapParty);
+    const businessUnits: BusinessUnitRef[] = ((units as { data?: { businessunitid: string; name: string }[] }).data || [])
+      .map((u) => ({ id: u.businessunitid, name: u.name }))
+      .filter((u) => u.id && u.name);
+    const mappedParties = (parties.data || []).map(mapParty).map((party) => {
+      const unit = businessUnits.find((u) => u.id === party.buId);
+      return unit ? { ...party, bu: party.bu || unit.name } : party;
+    });
     const mappedSla = (slas.data || []).map(mapSla);
     const mappedComms = (comms.data || []).map(mapComm);
     const mappedDocs = (docs.data || []).map(mapDoc);
     const mappedRenewals = (renewals.data || []).map(mapRenewal);
-    const businessUnits: BusinessUnitRef[] = ((units as { data?: { businessunitid: string; name: string }[] }).data || [])
-      .map((u) => ({ id: u.businessunitid, name: u.name }))
-      .filter((u) => u.id && u.name);
     let intake: IntakeEmail[] = [];
     try {
       intake = await loadMailboxEmails(mappedComms, mappedParties);

@@ -3,6 +3,7 @@ import {
   COMM_STATUSES,
   CATS,
   type Communication,
+  type EmailAttachment,
   type ThreadEmail,
 } from "../data/types";
 import {
@@ -11,12 +12,20 @@ import {
   commLocked,
   formatDateTime,
   loadCommThread,
+  loadEmailAttachmentFile,
   overdueLabel,
   saveComm,
   threadEmails,
   useStore,
   yesNo,
 } from "../data/store";
+import {
+  bytesToObjectUrl,
+  decodeText,
+  downloadBytes,
+  formatBytes,
+  previewKind,
+} from "../data/emailAttachments";
 import { Overlay, FilterField, catBadge, flagBadge, priBadge, statusBadge } from "./widgets";
 
 export function CommRecordForm({
@@ -195,9 +204,6 @@ export function CommRecordForm({
               {flagBadge(row.isEscalated, "Escalated", "Not Escalated")}
               {row.isEscalated ? <div className="hint">Locked — escalate can run only once.</div> : null}
             </Field>
-            <Field label="Is Manually Escalated">
-              <div className="readonly-val">{yesNo(row.isManuallyEscalated)}</div>
-            </Field>
             <Field label="Is Automatically Escalated">
               <div className="readonly-val">{yesNo(row.isAutomaticallyEscalated)}</div>
             </Field>
@@ -262,13 +268,119 @@ function EmailThreadPanel({ emails, loading }: { emails: ThreadEmail[]; loading:
           </dl>
           {mail.body ? <div className="email-body">{mail.body}</div> : <p className="email-empty">No body text on this email.</p>}
           {mail.quoted ? <blockquote className="email-quote">{mail.quoted}</blockquote> : null}
-          {mail.attachmentCount > 0 ? (
-            <div className="email-atts">
-              <span className="email-att-chip">📎 {mail.attachmentCount} attachment{mail.attachmentCount === 1 ? "" : "s"}</span>
-            </div>
-          ) : null}
+          <EmailAttachmentList items={mail.attachments || []} expectedCount={mail.attachmentCount} />
         </article>
       ))}
+    </div>
+  );
+}
+
+function EmailAttachmentList({ items, expectedCount }: { items: EmailAttachment[]; expectedCount: number }) {
+  const [previewId, setPreviewId] = useState<string | null>(null);
+  const [previewUrl, setPreviewUrl] = useState("");
+  const [previewText, setPreviewText] = useState("");
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    return () => {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+    };
+  }, [previewUrl]);
+
+  if (!items.length && !expectedCount) return null;
+
+  async function loadFile(att: EmailAttachment) {
+    setBusyId(att.id);
+    setError("");
+    try {
+      return await loadEmailAttachmentFile(att);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not open this attachment");
+      return null;
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function openAttachment(att: EmailAttachment) {
+    const kind = previewKind(att);
+    if (previewId === att.id && (previewUrl || previewText)) {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      setPreviewId(null);
+      setPreviewUrl("");
+      setPreviewText("");
+      return;
+    }
+    const file = await loadFile(att);
+    if (!file) return;
+    if (kind === "download") {
+      downloadBytes(file.bytes, file.name, file.mimeType);
+      return;
+    }
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    if (kind === "text") {
+      setPreviewText(decodeText(file.bytes) || "(empty file)");
+      setPreviewUrl("");
+    } else {
+      setPreviewText("");
+      setPreviewUrl(bytesToObjectUrl(file.bytes, file.mimeType));
+    }
+    setPreviewId(att.id);
+  }
+
+  async function downloadAttachment(att: EmailAttachment) {
+    const file = await loadFile(att);
+    if (!file) return;
+    downloadBytes(file.bytes, file.name, file.mimeType);
+  }
+
+  return (
+    <div className="email-atts">
+      <div className="email-att-head">
+        📎 {items.length || expectedCount} attachment{(items.length || expectedCount) === 1 ? "" : "s"}
+      </div>
+      {items.length ? (
+        <ul className="email-att-list">
+          {items.map((att) => {
+            const kind = previewKind(att);
+            const open = previewId === att.id;
+            const busy = busyId === att.id;
+            return (
+              <li key={att.id} className="email-att-row">
+                <div className="email-att-info">
+                  <button className="email-att-name" type="button" onClick={() => void openAttachment(att)} disabled={busy}>
+                    {att.name}
+                  </button>
+                  <span className="email-att-meta">
+                    {[formatBytes(att.size), att.inline ? "inline" : "", kind === "download" ? "download to open" : ""]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </span>
+                </div>
+                <div className="email-att-actions">
+                  <button className="btn btn-outline btn-mini" type="button" disabled={busy} onClick={() => void openAttachment(att)}>
+                    {busy && open ? "Opening…" : kind === "download" ? "Open" : open ? "Hide" : "View"}
+                  </button>
+                  <button className="btn btn-outline btn-mini" type="button" disabled={busy} onClick={() => void downloadAttachment(att)}>
+                    {busy && !open ? "Downloading…" : "Download"}
+                  </button>
+                </div>
+                {open ? (
+                  <div className="email-att-preview">
+                    {kind === "image" && previewUrl ? <img src={previewUrl} alt={att.name} /> : null}
+                    {kind === "pdf" && previewUrl ? <iframe title={att.name} src={previewUrl} /> : null}
+                    {kind === "text" ? <pre>{previewText}</pre> : null}
+                  </div>
+                ) : null}
+              </li>
+            );
+          })}
+        </ul>
+      ) : (
+        <p className="email-empty">This email has attachments, but the files could not be loaded from Dataverse.</p>
+      )}
+      {error ? <p className="email-att-error">{error}</p> : null}
     </div>
   );
 }

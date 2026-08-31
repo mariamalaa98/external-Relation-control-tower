@@ -151,6 +151,17 @@ export type License = {
   daysRemaining?: number;
 };
 
+export type EmailAttachment = {
+  id: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  inline?: boolean;
+  emailId?: string;
+  localBody?: string;
+  localBytesBase64?: string;
+};
+
 export type ThreadEmail = {
   id: string;
   subject: string;
@@ -162,6 +173,7 @@ export type ThreadEmail = {
   body: string;
   quoted?: string;
   attachmentCount: number;
+  attachments?: EmailAttachment[];
   isReply: boolean;
   conversationIndex?: string;
 };
