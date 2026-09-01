@@ -45,6 +45,7 @@ export interface Erc_externalpartiesBase {
   "erc_Department@odata.bind"?: string;
   erc_domain?: string;
   erc_duplicateflag?: boolean;
+  "erc_EscalationTeam@odata.bind"?: string;
   erc_externalpartyid: string;
   erc_officialemail?: string;
   erc_partyname?: string;
@@ -77,6 +78,8 @@ export interface Erc_externalparties extends Erc_externalpartiesBase {
   erc_defaultpriorityname?: string;
   erc_departmentname?: string;
   erc_duplicateflagname?: string;
+  erc_escalationteamname?: string;
+  erc_escalationteamyominame?: string;
   erc_priorityname?: string;
   erc_replyresponsiblename?: string;
   erc_replyresponsibleyominame?: string;
@@ -105,6 +108,8 @@ export interface Erc_externalparties extends Erc_externalpartiesBase {
   _erc_defaultowner_value?: string;
   erc_department?: object;
   _erc_department_value?: string;
+  erc_escalationteam?: object;
+  _erc_escalationteam_value?: string;
   erc_replyresponsible?: object;
   _erc_replyresponsible_value?: string;
   erc_supervisor?: object;

@@ -137,6 +137,22 @@
           "x-ms-read-only": true,
           "maxLength": 200
         },
+        "erc_currentrenewal": {
+          "type": "string",
+          "title": "Current Renewal",
+          "x-ms-dataverse-attribute": "erc_currentrenewal",
+          "x-ms-dataverse-type": "LookupType",
+          "x-ms-schema-name": "erc_CurrentRenewal"
+        },
+        "erc_currentrenewalname": {
+          "type": "string",
+          "title": "erc_currentrenewalname",
+          "x-ms-dataverse-attribute": "erc_currentrenewalname",
+          "x-ms-dataverse-type": "StringType",
+          "x-ms-schema-name": "erc_CurrentRenewalName",
+          "x-ms-read-only": true,
+          "maxLength": 850
+        },
         "erc_daysremaining": {
           "type": "string",
           "title": "Days Remaining",
@@ -219,6 +235,39 @@
           "x-ms-schema-name": "erc_DocumentURL",
           "maxLength": 100
         },
+        "erc_escalatedby": {
+          "type": "string",
+          "title": "Escalated By",
+          "x-ms-dataverse-attribute": "erc_escalatedby",
+          "x-ms-dataverse-type": "LookupType",
+          "x-ms-schema-name": "erc_EscalatedBy"
+        },
+        "erc_escalatedbyname": {
+          "type": "string",
+          "title": "erc_escalatedbyname",
+          "x-ms-dataverse-attribute": "erc_escalatedbyname",
+          "x-ms-dataverse-type": "StringType",
+          "x-ms-schema-name": "erc_EscalatedByName",
+          "x-ms-read-only": true,
+          "maxLength": 200
+        },
+        "erc_escalatedbyyominame": {
+          "type": "string",
+          "title": "erc_escalatedbyyominame",
+          "x-ms-dataverse-attribute": "erc_escalatedbyyominame",
+          "x-ms-dataverse-type": "StringType",
+          "x-ms-schema-name": "erc_EscalatedByYomiName",
+          "x-ms-read-only": true,
+          "maxLength": 200
+        },
+        "erc_escalationreason": {
+          "type": "string",
+          "title": "Escalation Reason",
+          "x-ms-dataverse-attribute": "erc_escalationreason",
+          "x-ms-dataverse-type": "StringType",
+          "x-ms-schema-name": "erc_EscalationReason",
+          "maxLength": 100
+        },
         "erc_expirydate": {
           "type": "string",
           "title": "Expiry Date",
@@ -242,6 +291,37 @@
           "x-ms-schema-name": "erc_ExternalPartyName",
           "x-ms-read-only": true,
           "maxLength": 850
+        },
+        "erc_isescalated": {
+          "type": "string",
+          "title": "Is Escalated",
+          "x-ms-dataverse-attribute": "erc_isescalated",
+          "x-ms-dataverse-type": "BooleanType",
+          "x-ms-schema-name": "erc_IsEscalated",
+          "enum": [
+            "No",
+            "Yes"
+          ],
+          "x-ms-enum-values": [
+            0,
+            1
+          ],
+          "Color": [
+            null,
+            null
+          ],
+          "x-ms-optionsetmetadataid": "014f7b81-29a5-f111-b8de-00224882d001",
+          "x-ms-isGlobal": false,
+          "x-ms-optionsetdisplayname": "Is Escalated",
+          "x-ms-optionSetType": "Boolean"
+        },
+        "erc_isescalatedname": {
+          "type": "string",
+          "title": "erc_isescalatedname",
+          "x-ms-dataverse-attribute": "erc_isescalatedname",
+          "x-ms-dataverse-type": "VirtualType",
+          "x-ms-schema-name": "erc_isescalatedName",
+          "x-ms-read-only": true
         },
         "erc_issuedate": {
           "type": "string",
@@ -291,6 +371,44 @@
           "x-ms-dataverse-primary-id": true,
           "required": true,
           "x-ms-keyType": "primary"
+        },
+        "erc_remindersent": {
+          "type": "string",
+          "title": "Reminder sent",
+          "x-ms-dataverse-attribute": "erc_remindersent",
+          "x-ms-dataverse-type": "BooleanType",
+          "x-ms-schema-name": "erc_Remindersent",
+          "enum": [
+            "No",
+            "Yes"
+          ],
+          "x-ms-enum-values": [
+            0,
+            1
+          ],
+          "Color": [
+            null,
+            null
+          ],
+          "x-ms-optionsetmetadataid": "f3d930e7-29a5-f111-b8de-00224882d001",
+          "x-ms-isGlobal": false,
+          "x-ms-optionsetdisplayname": "Reminder sent",
+          "x-ms-optionSetType": "Boolean"
+        },
+        "erc_remindersentname": {
+          "type": "string",
+          "title": "erc_remindersentname",
+          "x-ms-dataverse-attribute": "erc_remindersentname",
+          "x-ms-dataverse-type": "VirtualType",
+          "x-ms-schema-name": "erc_remindersentName",
+          "x-ms-read-only": true
+        },
+        "erc_reminderthreshold": {
+          "type": "string",
+          "title": "Reminder threshold",
+          "x-ms-dataverse-attribute": "erc_reminderthreshold",
+          "x-ms-dataverse-type": "IntegerType",
+          "x-ms-schema-name": "erc_Reminderthreshold"
         },
         "erc_renewalcompleted": {
           "type": "string",

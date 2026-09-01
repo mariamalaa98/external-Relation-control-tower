@@ -81,57 +81,6 @@
           "x-ms-read-only": true,
           "maxLength": 4000
         },
-        "erc_businessunit": {
-          "type": "string",
-          "title": "Business Unit",
-          "x-ms-dataverse-attribute": "erc_businessunit",
-          "x-ms-dataverse-type": "LookupType",
-          "x-ms-schema-name": "erc_BusinessUnit"
-        },
-        "erc_businessunitname": {
-          "type": "string",
-          "title": "erc_businessunitname",
-          "x-ms-dataverse-attribute": "erc_businessunitname",
-          "x-ms-dataverse-type": "StringType",
-          "x-ms-schema-name": "erc_BusinessUnitName",
-          "x-ms-read-only": true,
-          "maxLength": 160
-        },
-        "erc_category": {
-          "type": "string",
-          "title": "Category",
-          "x-ms-dataverse-attribute": "erc_category",
-          "x-ms-dataverse-type": "PicklistType",
-          "x-ms-schema-name": "erc_Category",
-          "enum": [
-            "Government",
-            "Insurance",
-            "Regulatory",
-            "Legal",
-            "Corporate",
-            " Partner"
-          ],
-          "x-ms-enum-values": [
-            1,
-            2,
-            3,
-            4,
-            5,
-            6
-          ],
-          "Color": [
-            null,
-            null,
-            null,
-            null,
-            null,
-            null
-          ],
-          "x-ms-optionsetmetadataid": "1cb7920f-b29f-f111-b8dc-00224882d001",
-          "x-ms-isGlobal": true,
-          "x-ms-optionsetdisplayname": "Category",
-          "x-ms-optionSetType": "Picklist"
-        },
         "erc_categoryf": {
           "type": "string",
           "title": "Category F",
@@ -174,14 +123,6 @@
           "x-ms-dataverse-attribute": "erc_categoryfname",
           "x-ms-dataverse-type": "VirtualType",
           "x-ms-schema-name": "erc_categoryfName",
-          "x-ms-read-only": true
-        },
-        "erc_categoryname": {
-          "type": "string",
-          "title": "erc_categoryname",
-          "x-ms-dataverse-attribute": "erc_categoryname",
-          "x-ms-dataverse-type": "VirtualType",
-          "x-ms-schema-name": "erc_categoryName",
           "x-ms-read-only": true
         },
         "erc_closedby": {
@@ -483,35 +424,6 @@
           "x-ms-schema-name": "erc_lifecyclestatusName",
           "x-ms-read-only": true
         },
-        "erc_priority": {
-          "type": "string",
-          "title": "Priority",
-          "x-ms-dataverse-attribute": "erc_priority",
-          "x-ms-dataverse-type": "PicklistType",
-          "x-ms-schema-name": "erc_Priority",
-          "enum": [
-            "Critical",
-            "High",
-            "Medium",
-            "Low"
-          ],
-          "x-ms-enum-values": [
-            1,
-            2,
-            3,
-            4
-          ],
-          "Color": [
-            null,
-            null,
-            null,
-            null
-          ],
-          "x-ms-optionsetmetadataid": "d9aad239-b29f-f111-b8dc-00224882d001",
-          "x-ms-isGlobal": true,
-          "x-ms-optionsetdisplayname": "Priority",
-          "x-ms-optionSetType": "Picklist"
-        },
         "erc_priorityf": {
           "type": "string",
           "title": "Priority F",
@@ -548,14 +460,6 @@
           "x-ms-dataverse-attribute": "erc_priorityfname",
           "x-ms-dataverse-type": "VirtualType",
           "x-ms-schema-name": "erc_priorityfName",
-          "x-ms-read-only": true
-        },
-        "erc_priorityname": {
-          "type": "string",
-          "title": "erc_priorityname",
-          "x-ms-dataverse-attribute": "erc_priorityname",
-          "x-ms-dataverse-type": "VirtualType",
-          "x-ms-schema-name": "erc_priorityName",
           "x-ms-read-only": true
         },
         "erc_receiveddate": {

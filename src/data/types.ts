@@ -54,6 +54,8 @@ export type Party = {
   domain: string;
   bu: string;
   buId?: string;
+  department?: string;
+  departmentId?: string;
   owner: string;
   criticality: "High" | "Medium" | "Low";
   status: "Active" | "Inactive";
@@ -85,6 +87,7 @@ export type Communication = {
   due: string;
   status: CommStatus;
   bu: string;
+  department?: string;
   caseRef?: string;
   closed?: string;
   closedBy?: string;
@@ -108,11 +111,13 @@ export type Communication = {
   threadId?: string;
   conversationIndex?: string;
   emailActivityId?: string;
-  /** True when Category was set on the record (formula from party, or written erc_category for unmatched). */
+  /** True when erc_CategoryF has a value. */
   categoryAssigned?: boolean;
 };
 
 export type RenewalStatus = "Open" | "In progress" | "Completed" | "Overdue" | "Cancelled";
+export type NoticeType = "Reminder" | "Expiry" | "Escalation";
+export type NoticeResult = "Sent" | "Failed";
 
 export type Renewal = {
   id: string;
@@ -125,6 +130,7 @@ export type Renewal = {
   completed?: string;
   risk: DocRisk;
   owner: string;
+  ownerId?: string;
   notes?: string;
   reminderDate?: string;
   reminderCount?: number;
@@ -145,10 +151,35 @@ export type License = {
   owner: string;
   bu: string;
   buId?: string;
+  department?: string;
   status?: string;
   notified?: string;
   done?: string;
   daysRemaining?: number;
+  reminderThreshold?: number;
+  reminderSent?: boolean;
+  isOverdue?: boolean;
+  isEscalated?: boolean;
+  escalatedBy?: string;
+  escalationReason?: string;
+  currentRenewalId?: string;
+  currentRenewalName?: string;
+};
+
+export type Notice = {
+  id: string;
+  recordId: string;
+  title: string;
+  type: NoticeType;
+  documentId?: string;
+  documentName?: string;
+  renewalId?: string;
+  renewalName?: string;
+  sentOn?: string;
+  result: NoticeResult;
+  message?: string;
+  isRead: boolean;
+  owner: string;
 };
 
 export type EmailAttachment = {
@@ -204,6 +235,7 @@ export type Store = {
   comms: Communication[];
   docs: License[];
   renewals: Renewal[];
+  notices: Notice[];
   intake: IntakeEmail[];
   files: EvidenceFile[];
   threadByComm: Record<string, ThreadEmail[]>;

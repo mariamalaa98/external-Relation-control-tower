@@ -4,8 +4,8 @@ import { dueFromCreated } from "./communicationLogic";
 const sla = (id: string, category: SlaRule["category"], priority: SlaRule["priority"], ackHours: number, resolveDays: number, basis: SlaRule["basis"]): SlaRule =>
   ({ id, name: `${category} - ${priority}`, category, priority, ackHours, resolveDays, basis, active: true });
 
-const p = (id: string, name: string, category: Party["category"], email: string, domain: string, bu: string, owner: string, criticality: Party["criticality"], status: Party["status"]): Party =>
-  ({ id, name, category, email, domain, bu, owner, criticality, status });
+const p = (id: string, name: string, category: Party["category"], email: string, domain: string, bu: string, owner: string, criticality: Party["criticality"], status: Party["status"], department = "Government Relations"): Party =>
+  ({ id, name, category, email, domain, bu, owner, criticality, status, department });
 
 const c = (
   id: string, party: string, cat: Communication["cat"], subj: string, owner: string, sup: string,
@@ -36,7 +36,12 @@ const c = (
 const d = (
   id: string, type: License["type"], name: string, party: string, auth: string, issue: string, expiry: string,
   risk: License["risk"], owner: string, bu: string, extra: Partial<License> = {}
-): License => ({ id, recordId: id, type, name, party, auth, issue, expiry, risk, owner, bu, ...extra });
+): License => ({
+  id, recordId: id, type, name, party, auth, issue, expiry, risk, owner, bu,
+  reminderThreshold: extra.reminderThreshold ?? 120,
+  reminderSent: extra.reminderSent ?? !!extra.notified,
+  ...extra,
+});
 
 const m = (id: string, recv: string, from: string, subj: string, match: string, cat: IntakeEmail["cat"], pri: IntakeEmail["pri"], owner: string, status: IntakeEmail["status"], extra: Partial<IntakeEmail> = {}): IntakeEmail =>
   ({ id, recv, from, to: MAILBOX_TEST, subj, match, cat, pri, owner, status, conversationIndex: extra.conversationIndex || `thread-${id}`, ...extra });
@@ -54,7 +59,7 @@ const stillWithin = new Date(Date.now() - 30 * 60 * 1000).toISOString();
 export const SEED: Store = {
   source: "local",
   ready: true,
-  businessUnits: [],
+  businessUnits: BU.map((name, i) => ({ id: `bu-${i}`, name })),
   sla: [
     sla("S1", "Government", "Critical", 4, 2, "Working days"),
     sla("S2", "Government", "High", 8, 5, "Working days"),
@@ -68,16 +73,16 @@ export const SEED: Store = {
     sla("S10", "Partner", "Low", 48, 14, "Working days"),
   ],
   parties: [
-    p("P1", "National Health Insurance Authority", "Government", "correspondence@nhia.gov.eg", "nhia.gov.eg", BU[3], "Ahmed Salah", "High", "Active"),
-    p("P2", "Egyptian Drug Authority", "Regulatory", "inspection@edaegypt.gov.eg", "edaegypt.gov.eg", BU[1], "Mona ElSayed", "High", "Active"),
-    p("P3", "Ministry of Health – Alexandria", "Government", "licensing@mohp.gov.eg", "mohp.gov.eg", BU[0], "Ahmed Salah", "High", "Active"),
-    p("P4", "MetLife Egypt", "Insurance", "claims@metlife.com.eg", "metlife.com.eg", BU[0], "Nourhan Abdelrahman", "High", "Active"),
-    p("P5", "AXA Egypt", "Insurance", "provider.relations@axa.com.eg", "axa.com.eg", BU[3], "Nourhan Abdelrahman", "Medium", "Active"),
-    p("P6", "Zulficar & Partners Law Firm", "Legal", "legal@zulficarpartners.com", "zulficarpartners.com", BU[3], "Heba Kamal", "High", "Active"),
-    p("P7", "Misr Insurance", "Insurance", "providers@misrinsurance.com.eg", "misrinsurance.com.eg", BU[2], "Nourhan Abdelrahman", "Medium", "Active"),
-    p("P8", "Nile Radiology Partners", "Partner", "contracts@nileradiology.com", "nileradiology.com", BU[0], "Karim ElBadry", "Low", "Inactive"),
-    p("P9", "Egyptian Tax Authority", "Government", "vat@eta.gov.eg", "eta.gov.eg", BU[3], "Sara Fouad", "High", "Active"),
-    p("P10", "General Authority for Healthcare Accreditation", "Regulatory", "cap@gahar.gov.eg", "gahar.gov.eg", BU[0], "Yasser Mahmoud", "High", "Active"),
+    p("P1", "National Health Insurance Authority", "Government", "correspondence@nhia.gov.eg", "nhia.gov.eg", BU[3], "Ahmed Salah", "High", "Active", "Government Relations"),
+    p("P2", "Egyptian Drug Authority", "Regulatory", "inspection@edaegypt.gov.eg", "edaegypt.gov.eg", BU[1], "Mona ElSayed", "High", "Active", "Government Relations"),
+    p("P3", "Ministry of Health – Alexandria", "Government", "licensing@mohp.gov.eg", "mohp.gov.eg", BU[0], "Ahmed Salah", "High", "Active", "Government Relations"),
+    p("P4", "MetLife Egypt", "Insurance", "claims@metlife.com.eg", "metlife.com.eg", BU[0], "Nourhan Abdelrahman", "High", "Active", "Insurance Relations"),
+    p("P5", "AXA Egypt", "Insurance", "provider.relations@axa.com.eg", "axa.com.eg", BU[3], "Nourhan Abdelrahman", "Medium", "Active", "Insurance Relations"),
+    p("P6", "Zulficar & Partners Law Firm", "Legal", "legal@zulficarpartners.com", "zulficarpartners.com", BU[3], "Heba Kamal", "High", "Active", "Legal Affairs"),
+    p("P7", "Misr Insurance", "Insurance", "providers@misrinsurance.com.eg", "misrinsurance.com.eg", BU[2], "Nourhan Abdelrahman", "Medium", "Active", "Insurance Relations"),
+    p("P8", "Nile Radiology Partners", "Partner", "contracts@nileradiology.com", "nileradiology.com", BU[0], "Karim ElBadry", "Low", "Inactive", "Medical Services"),
+    p("P9", "Egyptian Tax Authority", "Government", "vat@eta.gov.eg", "eta.gov.eg", BU[3], "Sara Fouad", "High", "Active", "Finance"),
+    p("P10", "General Authority for Healthcare Accreditation", "Regulatory", "cap@gahar.gov.eg", "gahar.gov.eg", BU[0], "Yasser Mahmoud", "High", "Active", "Government Relations"),
   ],
   comms: [
     c("COM-2026-0412", "National Health Insurance Authority", "Government", "Facility re-accreditation site visit schedule", "Ahmed Salah", "Dr. Bassam Farid", "Critical", "2026-08-10", "In Progress", BU[0], { resp: "2026-08-12 16:20", respAction: "Acknowledged; documents in preparation", isAutomaticallyEscalated: true, isEscalated: true, escalatedBy: "System (Automatic Escalation)" }),
@@ -111,6 +116,7 @@ export const SEED: Store = {
     m("EML-1006", "2026-08-23 16:48", "noreply@tenders-portal.eg", "Tender bulletin — medical consumables", "", "Corporate", "Low", "Sara Fouad", "New"),
   ],
   renewals: [],
+  notices: [],
   files: [
     { id: "F1", name: "NHIA re-accreditation response letter.pdf", rel: "COM-2026-0412", date: "2026-08-15", by: "Ahmed Salah" },
     { id: "F2", name: "EDA inspection findings — signed CAP.pdf", rel: "COM-2026-0411", date: "2026-08-14", by: "Mona ElSayed" },

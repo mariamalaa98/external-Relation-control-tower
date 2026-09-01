@@ -75,6 +75,39 @@ export function FilterField({ label, children }: { label: string; children: Reac
   );
 }
 
+export function OrgFilterFields({
+  businessUnits,
+  departments,
+  bu,
+  dept,
+  onBu,
+  onDept,
+}: {
+  businessUnits: string[];
+  departments: string[];
+  bu: string;
+  dept: string;
+  onBu: (v: string) => void;
+  onDept: (v: string) => void;
+}) {
+  return (
+    <>
+      <FilterField label="Business Unit">
+        <select value={bu} onChange={(e) => onBu(e.target.value)}>
+          <option value="All">All</option>
+          {businessUnits.map((name) => <option key={name} value={name}>{name}</option>)}
+        </select>
+      </FilterField>
+      <FilterField label="Department">
+        <select value={dept} onChange={(e) => onDept(e.target.value)}>
+          <option value="All">All</option>
+          {departments.map((name) => <option key={name} value={name}>{name}</option>)}
+        </select>
+      </FilterField>
+    </>
+  );
+}
+
 export function PageHead({
   title,
   sub,

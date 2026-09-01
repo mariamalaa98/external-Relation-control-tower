@@ -4,6 +4,7 @@
  */
 
 // Models
+export * as ActivitymimeattachmentsModel from './models/ActivitymimeattachmentsModel';
 export * as ActivitypartiesModel from './models/ActivitypartiesModel';
 export * as BusinessunitsModel from './models/BusinessunitsModel';
 export * as CommonModels from './models/CommonModels';
@@ -12,12 +13,14 @@ export * as EmailsModel from './models/EmailsModel';
 export * as Erc_communicationsModel from './models/Erc_communicationsModel';
 export * as Erc_externalpartiesModel from './models/Erc_externalpartiesModel';
 export * as Erc_licenseandcontractsModel from './models/Erc_licenseandcontractsModel';
+export * as Erc_notificationsModel from './models/Erc_notificationsModel';
 export * as Erc_renewalsModel from './models/Erc_renewalsModel';
 export * as Erc_sla2sModel from './models/Erc_sla2sModel';
 export * as SystemusersModel from './models/SystemusersModel';
 export * as TeamsModel from './models/TeamsModel';
 
 // Services
+export * from './services/ActivitymimeattachmentsService';
 export * from './services/ActivitypartiesService';
 export * from './services/BusinessunitsService';
 export * from './services/Cr603_chklst_departmentsesService';
@@ -25,6 +28,7 @@ export * from './services/EmailsService';
 export * from './services/Erc_communicationsService';
 export * from './services/Erc_externalpartiesService';
 export * from './services/Erc_licenseandcontractsService';
+export * from './services/Erc_notificationsService';
 export * from './services/Erc_renewalsService';
 export * from './services/Erc_sla2sService';
 export * from './services/SystemusersService';

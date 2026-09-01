@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+﻿import { Component, useEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent, type ReactNode } from "react";
 import {
   BUS,
   CATS,
@@ -30,6 +30,7 @@ import {
   docLocked,
   docState,
   escalateManually,
+  escalateLicense,
   canManualEscalate,
   formatDateTime,
   refresh,
@@ -39,20 +40,34 @@ import {
   respondToComm,
   routeEmail,
   runAutomaticEscalation,
+  runLicenseMonitor,
   tickFormulas,
   sendRenewalNotice,
   simulateInboundEmail,
   slaState,
-  threadEmails,
+  summarizeMonitor,
+  unreadNotices,
   useStore,
+  DEFAULT_REMINDER_THRESHOLD,
   linkCommToParty,
   assignCommCategory,
   resolveUnmatchedEmail,
   unmatchedComms,
   unmatchedIntake,
+  matchesSearch,
+  partyOrgOptions,
+  partyMatchesOrg,
+  commMatchesOrg,
+  docMatchesOrg,
+  communicationDeepLink,
+  copyText,
+  loadCommunicationById,
+  parseCommunicationDeepLink,
+  cleanRecordGuid,
 } from "./data/store";
-import { DataTable, FilterField, Kpi, Overlay, PageHead, catBadge, flagBadge, priBadge, statusBadge } from "./ui/widgets";
-import { CommRecordForm, EscalationCenter } from "./ui/communication";
+import { DataTable, FilterField, Kpi, Overlay, OrgFilterFields, PageHead, catBadge, flagBadge, priBadge, statusBadge } from "./ui/widgets";
+import { CloseCommForm, CommRecordForm, EscalationCenter } from "./ui/communication";
+import { LicenseEscalationPanel, NotificationCenter, RenewalTaskTable } from "./ui/license";
 import { ResolveUnmatchedForm, UnmatchedSendersPage } from "./ui/unmatched";
 
 const NAV = [
@@ -98,7 +113,28 @@ const AREAS = [
 
 type ScreenId = (typeof NAV)[number]["items"][number]["id"];
 type AreaId = (typeof AREAS)[number]["id"];
-const LATER: ScreenId[] = ["archive", "notifications", "reports", "auditComm", "auditNotif"];
+const LATER: ScreenId[] = ["archive", "reports", "auditComm", "auditNotif"];
+
+class OverlayError extends Component<{ children: ReactNode; onReset: () => void }, { message: string }> {
+  state = { message: "" };
+  static getDerivedStateFromError(err: Error) {
+    return { message: err.message || String(err) };
+  }
+  render() {
+    if (this.state.message) {
+      return (
+        <>
+          <div className="scrim open" onClick={this.props.onReset} />
+          <div className="banner warn" style={{ position: "fixed", zIndex: 70, left: 16, right: 16, top: 56 }}>
+            Communication overlay failed: {this.state.message}{" "}
+            <button className="btn btn-outline" type="button" onClick={this.props.onReset}>Close</button>
+          </div>
+        </>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 type Modal =
   | { kind: "party" }
@@ -111,6 +147,7 @@ type Modal =
   | { kind: "reopen"; comm: Communication }
   | { kind: "evidence"; comm: Communication }
   | { kind: "escalate"; comm: Communication }
+  | { kind: "escalateDoc"; doc: License }
   | { kind: "resolveUnmatched"; target: { type: "comm"; comm: Communication } | { type: "mail"; mail: IntakeEmail } }
   | { kind: "docDetail"; doc: License }
   | null;
@@ -128,6 +165,10 @@ export default function App() {
   const [calView, setCalView] = useState<"cal" | "list" | "risk">("cal");
   const [docType, setDocType] = useState("All");
   const [docStatus, setDocStatus] = useState("All");
+  const [orgBu, setOrgBu] = useState("All");
+  const [orgDept, setOrgDept] = useState("All");
+  const [escTab, setEscTab] = useState<"comms" | "licenses">("comms");
+  const lastDeepLink = useRef("");
 
   useEffect(() => {
     const id = window.setInterval(() => {
@@ -135,6 +176,35 @@ export default function App() {
     }, 60000);
     return () => window.clearInterval(id);
   }, []);
+
+  async function openFromDeepLink(guid: string) {
+    const clean = guid.replace(/[{}]/g, "").toLowerCase();
+    if (!clean || lastDeepLink.current === clean) return;
+    lastDeepLink.current = clean;
+    setBusy(true);
+    try {
+      const row = await loadCommunicationById(guid);
+      if (!row) {
+        ping("This deeplink did not match a communication GUID");
+        lastDeepLink.current = "";
+        return;
+      }
+      setArea("ops");
+      setScreen("tracker");
+      setDrawer({ ...row, log: row.log || [] });
+    } catch (err) {
+      lastDeepLink.current = "";
+      ping(err instanceof Error ? err.message : "Deeplink failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!db.ready) return;
+    const guid = parseCommunicationDeepLink();
+    if (guid) void openFromDeepLink(guid);
+  }, [db.ready]);
 
   function go(id: ScreenId) {
     const found = NAV.find((g) => g.items.some((i) => i.id === id));
@@ -158,21 +228,37 @@ export default function App() {
     }
   }
 
-  const openComms = db.comms.filter((c) => c.status !== "Closed");
+  const orgOpts = useMemo(() => partyOrgOptions(db.parties, orgBu, db.businessUnits), [db.parties, db.businessUnits, orgBu]);
+  const scopedParties = useMemo(
+    () => db.parties.filter((p) => partyMatchesOrg(p, orgBu, orgDept, db.businessUnits)),
+    [db.parties, db.businessUnits, orgBu, orgDept],
+  );
+  const scopedComms = useMemo(
+    () => db.comms.filter((c) => commMatchesOrg(c, orgBu, orgDept, db.parties, db.businessUnits)),
+    [db.comms, db.parties, db.businessUnits, orgBu, orgDept],
+  );
+  const scopedDocs = useMemo(
+    () => db.docs.filter((d) => docMatchesOrg(d, orgBu, orgDept, db.parties, db.businessUnits)),
+    [db.docs, db.parties, db.businessUnits, orgBu, orgDept],
+  );
+
+  const openComms = scopedComms.filter((c) => c.status !== "Closed");
   const mine = openComms.filter((c) => !c.owner || c.owner === ME || db.source === "local");
   const breached = openComms.filter((c) => c.isOverdue || slaState(c) === "Breached");
-  const expiring = db.docs.filter((d) => {
+  const expiring = scopedDocs.filter((d) => {
     const s = docState(d);
     return s === "Expiring" || s === "Expired";
   });
-  const closed = db.comms.filter((c) => c.status === "Closed");
+  const closed = scopedComms.filter((c) => c.status === "Closed");
   const compliance = closed.length
     ? Math.round((closed.filter((c) => slaState(c) === "Within").length / closed.length) * 100)
     : 0;
-  const catCounts = CATS.map((cat) => ({ cat, n: db.comms.filter((c) => c.cat === cat).length }));
+  const catCounts = CATS.map((cat) => ({ cat, n: scopedComms.filter((c) => c.cat === cat).length }));
   const maxCat = Math.max(...catCounts.map((x) => x.n), 1);
   const unprocessed = db.intake.filter((x) => x.status !== "Routed");
   const unmatchedCount = unmatchedComms().length + unmatchedIntake().length;
+  const unreadNoticeCount = unreadNotices(db.notices || []).length;
+  const overdueDocs = scopedDocs.filter((d) => d.isOverdue && !d.done);
   const liveDrawer = drawer ? db.comms.find((c) => c.id === drawer.id || c.recordId === drawer.recordId) || drawer : null;
 
   return (
@@ -216,6 +302,8 @@ export default function App() {
                   <span>{i.text}</span>
                   {i.id === "intake" && unprocessed.length > 0 ? <span className="dot" /> : null}
                   {i.id === "unmatched" && unmatchedCount > 0 ? <span className="dot" /> : null}
+                  {i.id === "notifications" && unreadNoticeCount > 0 ? <span className="dot" /> : null}
+                  {i.id === "escalation" && overdueDocs.length > 0 ? <span className="dot" /> : null}
                 </button>
               ))}
             </div>
@@ -228,22 +316,41 @@ export default function App() {
               : <>Running on prototype data{db.error ? ` (${db.error})` : ""}. Use <b>pa app run</b> to load live <b>erc_</b> records.</>}
           </div>
 
+          {!LATER.includes(screen) && screen !== "admin" ? (
+            <div className="filters org-filters">
+              <OrgFilterFields
+                businessUnits={orgOpts.businessUnits}
+                departments={orgOpts.departments}
+                bu={orgBu}
+                dept={orgDept}
+                onBu={(next) => {
+                  setOrgBu(next);
+                  const depts = partyOrgOptions(db.parties, next, db.businessUnits).departments;
+                  if (orgDept !== "All" && !depts.includes(orgDept)) setOrgDept("All");
+                }}
+                onDept={setOrgDept}
+              />
+            </div>
+          ) : null}
+
           {screen === "dashboard" && (
             <>
-              <PageHead title="Executive Dashboard" sub={`${db.comms.length} communications · ${db.docs.length} documents`}>
+              <PageHead title="Executive Dashboard" sub={`${scopedComms.length} communications · ${scopedDocs.length} documents`}>
                 <button className="btn btn-outline" type="button" disabled={busy} onClick={() => run("Register refreshed", refresh)}>Refresh</button>
               </PageHead>
               <div className="callout">
-                <b>Email activity → Create communication flow → Is OverDue formula column → Auto or manual escalate once → Close.</b>
-                The app writes the Dataverse flags those four Power Automate flows listen to. It does not send the escalation emails itself.
+                <b>Communications:</b> Email activity → Create communication → Is OverDue → Auto or manual escalate once → Close.
+                <b> Licenses:</b> Create document → Days remaining → Risk → Reminder threshold → Renewal task → Owner → Log notification → Renewed or Expiry → Critical → Overdue → Escalation Center.
               </div>
               <div className="kpis">
-                <Kpi acc="var(--bronze)" label="Total Communications" value={db.comms.length} detail="All categories" onClick={() => go("tracker")} />
+                <Kpi acc="var(--bronze)" label="Total Communications" value={scopedComms.length} detail="All categories" onClick={() => go("tracker")} />
                 <Kpi acc="var(--info)" label="In Progress" value={openComms.length} detail="Not closed" onClick={() => go("pending")} />
                 <Kpi acc="var(--bad)" label="Overdue" value={breached.length} detail="Is OverDue formula column" onClick={() => go("escalation")} />
                 <Kpi acc="var(--ok)" label="SLA Compliance" value={`${compliance}%`} detail="Closed records" />
                 <Kpi acc="var(--warn)" label="Unmatched Senders" value={unmatchedCount} detail="No External Party" onClick={() => go("unmatched")} />
                 <Kpi acc="var(--warn)" label="Renewals Due" value={expiring.length} detail="Within 90 days / expired" onClick={() => go("renewals")} />
+                <Kpi acc="var(--bad)" label="Expired licenses" value={overdueDocs.length} detail="Expiry reached, not renewed" onClick={() => go("escalation")} />
+                <Kpi acc="var(--info)" label="Unread notices" value={unreadNoticeCount} detail="Reminder / expiry / escalation" onClick={() => go("notifications")} />
               </div>
               <div className="two">
                 <div className="card chartcard">
@@ -309,10 +416,10 @@ export default function App() {
 
           {screen === "tracker" && (
             <>
-              <PageHead title="Communication Tracker" sub={`${db.comms.length} records`}>
+              <PageHead title="Communication Tracker" sub={`${scopedComms.length} records`}>
                 <button className="btn btn-primary" type="button" onClick={() => setModal({ kind: "comm" })}>New Communication</button>
               </PageHead>
-              <CommTable rows={db.comms} q={q} setQ={setQ} onOpen={setDrawer} />
+              <CommTable rows={scopedComms} q={q} setQ={setQ} onOpen={setDrawer} />
             </>
           )}
 
@@ -320,7 +427,7 @@ export default function App() {
             <>
               <PageHead title="Legal Cases Notification" sub="Communications where Category = Legal" />
               <CommTable
-                rows={db.comms.filter((c) => c.cat === "Legal")}
+                rows={scopedComms.filter((c) => c.cat === "Legal")}
                 q={q}
                 setQ={setQ}
                 onOpen={setDrawer}
@@ -331,38 +438,64 @@ export default function App() {
 
           {screen === "escalation" && (
             <>
-              <PageHead title="Escalation Center" sub={db.source === "dataverse" ? "Automatic flow every 10 minutes · Manual flow on Is Manually Escalated" : "Prototype simulates the automatic flow locally"}>
-                <button
-                  className="btn btn-outline"
-                  type="button"
-                  disabled={busy}
-                  onClick={() => run(
+              <PageHead title="Escalation Center" sub="Communications overdue flags · License expiry monitor">
+                <div className="toggle">
+                  <button className={escTab === "comms" ? "on" : ""} type="button" onClick={() => setEscTab("comms")}>Communications</button>
+                  <button className={escTab === "licenses" ? "on" : ""} type="button" onClick={() => setEscTab("licenses")}>Licenses &amp; renewals</button>
+                </div>
+                {escTab === "comms" ? (
+                  <button
+                    className="btn btn-outline"
+                    type="button"
+                    disabled={busy}
+                    onClick={() => run(
+                      db.source === "dataverse" ? "Refreshed from Dataverse (auto flow runs every 10 minutes)" : "Automatic escalation ran",
+                      runAutomaticEscalation,
+                    )}
+                  >
+                    {db.source === "dataverse" ? "Refresh from auto flow" : "Run automatic escalation"}
+                  </button>
+                ) : (
+                  <button
+                    className="btn btn-outline"
+                    type="button"
+                    disabled={busy}
+                    onClick={() => run("Expiry monitor ran", async () => summarizeMonitor(await runLicenseMonitor()))}
+                  >
+                    Run expiry monitor
+                  </button>
+                )}
+              </PageHead>
+              {escTab === "comms" ? (
+                <EscalationCenter
+                  q={q}
+                  setQ={setQ}
+                  busy={busy}
+                  comms={scopedComms}
+                  onOpen={setDrawer}
+                  onRunAuto={() => run(
                     db.source === "dataverse" ? "Refreshed from Dataverse (auto flow runs every 10 minutes)" : "Automatic escalation ran",
                     runAutomaticEscalation,
                   )}
-                >
-                  {db.source === "dataverse" ? "Refresh from auto flow" : "Run automatic escalation"}
-                </button>
-              </PageHead>
-              <EscalationCenter
-                q={q}
-                setQ={setQ}
-                busy={busy}
-                onOpen={setDrawer}
-                onRunAuto={() => run(
-                  db.source === "dataverse" ? "Refreshed from Dataverse (auto flow runs every 10 minutes)" : "Automatic escalation ran",
-                  runAutomaticEscalation,
-                )}
-                onEscalate={(row) => {
-                  if (canManualEscalate(row)) setModal({ kind: "escalate", comm: row });
-                }}
-              />
+                  onEscalate={(row) => {
+                    if (canManualEscalate(row)) setModal({ kind: "escalate", comm: row });
+                  }}
+                />
+              ) : (
+                <LicenseEscalationPanel
+                  q={q}
+                  busy={busy}
+                  docs={scopedDocs}
+                  onOpen={(doc) => setModal({ kind: "docDetail", doc })}
+                  onEscalate={(doc) => setModal({ kind: "escalateDoc", doc })}
+                />
+              )}
             </>
           )}
 
           {screen === "parties" && (
             <>
-              <PageHead title="External Party Master" sub={`${db.parties.length} parties`}>
+              <PageHead title="External Party Master" sub={`${scopedParties.length} parties`}>
                 <button className="btn btn-primary" type="button" onClick={() => setModal({ kind: "party" })}>New Party</button>
               </PageHead>
               <div className="filters">
@@ -371,8 +504,8 @@ export default function App() {
                 </FilterField>
               </div>
               <DataTable
-                cols={["Party", "Category", "Email", "Domain", "Business Unit", "Criticality", "Status", "Comms"]}
-                rows={db.parties
+                cols={["Party", "Category", "Email", "Domain", "Business Unit", "Department", "Criticality", "Status", "Comms"]}
+                rows={scopedParties
                   .filter((p) => `${p.name} ${p.domain} ${p.email}`.toLowerCase().includes(q.toLowerCase()))
                   .map((p) => ({
                     key: p.id,
@@ -382,9 +515,10 @@ export default function App() {
                       p.email,
                       p.domain,
                       p.bu || "—",
+                      p.department || "—",
                       priBadge(p.criticality),
                       statusBadge(p.status),
-                      db.comms.filter((c) => c.party === p.name || c.partyId === p.id).length,
+                      scopedComms.filter((c) => c.party === p.name || c.partyId === p.id).length,
                     ],
                   }))}
               />
@@ -393,11 +527,12 @@ export default function App() {
 
           {screen === "licenses" && (
             <>
-              <PageHead title="License & Contract Tracker" sub={`${db.docs.length} documents`}>
+              <PageHead title="License & Contract Tracker" sub={`${scopedDocs.length} documents`}>
+                <button className="btn btn-outline" type="button" disabled={busy} onClick={() => run("Expiry monitor ran", async () => summarizeMonitor(await runLicenseMonitor()))}>Run expiry monitor</button>
                 <button className="btn btn-primary" type="button" onClick={() => setModal({ kind: "doc" })}>New Document</button>
               </PageHead>
               <DocTable
-                rows={db.docs}
+                rows={scopedDocs}
                 q={q}
                 setQ={setQ}
                 typeFilter={docType}
@@ -416,12 +551,27 @@ export default function App() {
               view={calView}
               q={q}
               setQ={setQ}
+              docs={scopedDocs}
               onMonth={setCalMonth}
               onView={setCalView}
               onOpen={(doc) => setModal({ kind: "docDetail", doc })}
               onRenew={(doc) => run(`${doc.name} renewed`, () => renewDoc(doc.id))}
               onNew={() => setModal({ kind: "doc" })}
             />
+          )}
+
+          {screen === "notifications" && (
+            <>
+              <PageHead title="Notification Center" sub={`${db.notices.length} logged events · ${unreadNoticeCount} unread`}>
+                <button className="btn btn-outline" type="button" disabled={busy} onClick={() => run("Expiry monitor ran", async () => summarizeMonitor(await runLicenseMonitor()))}>Run expiry monitor</button>
+              </PageHead>
+              <NotificationCenter
+                q={q}
+                setQ={setQ}
+                busy={busy}
+                onOpenDoc={(doc) => setModal({ kind: "docDetail", doc })}
+              />
+            </>
           )}
 
           {screen === "admin" && (
@@ -450,18 +600,20 @@ export default function App() {
       </div>
 
       {liveDrawer && (
-        <CommRecordForm
-          row={liveDrawer}
-          busy={busy}
-          onClose={() => setDrawer(null)}
-          onRespond={() => setModal({ kind: "respond", comm: liveDrawer })}
-          onCloseRec={() => setModal({ kind: "close", comm: liveDrawer })}
-          onReopen={() => setModal({ kind: "reopen", comm: liveDrawer })}
-          onEscalate={() => {
-            if (canManualEscalate(liveDrawer)) setModal({ kind: "escalate", comm: liveDrawer });
-          }}
-          onSaved={ping}
-        />
+        <OverlayError key={liveDrawer.recordId || liveDrawer.id} onReset={() => setDrawer(null)}>
+          <CommRecordForm
+            row={liveDrawer}
+            busy={busy}
+            onClose={() => setDrawer(null)}
+            onRespond={() => setModal({ kind: "respond", comm: liveDrawer })}
+            onCloseRec={() => setModal({ kind: "close", comm: liveDrawer })}
+            onReopen={() => setModal({ kind: "reopen", comm: liveDrawer })}
+            onEscalate={() => {
+              if (canManualEscalate(liveDrawer)) setModal({ kind: "escalate", comm: liveDrawer });
+            }}
+            onSaved={ping}
+          />
+        </OverlayError>
       )}
 
       {modal && (
@@ -492,10 +644,18 @@ function CommTable({
   const [cat, setCat] = useState("All");
   const [status, setStatus] = useState("All");
   const [sla, setSla] = useState("All");
+  const [copiedId, setCopiedId] = useState("");
   const filtered = useMemo(() => rows.filter((r) => {
     const hit = `${r.id} ${r.party} ${r.subj} ${r.owner} ${r.caseRef || ""}`.toLowerCase().includes(q.toLowerCase());
     return hit && (cat === "All" || r.cat === cat) && (status === "All" || r.status === status) && (sla === "All" || slaState(r) === sla);
   }), [rows, q, cat, status, sla]);
+  async function copyRowLink(row: Communication, e: MouseEvent) {
+    e.stopPropagation();
+    const link = communicationDeepLink(row.recordId);
+    const ok = await copyText(link);
+    setCopiedId(ok ? row.recordId || row.id : "");
+    window.setTimeout(() => setCopiedId(""), 1600);
+  }
   return (
     <>
       <div className="filters">
@@ -520,8 +680,8 @@ function CommTable({
       </div>
       <DataTable
         cols={legal
-          ? ["CommID", "Case Reference", "External Party", "Subject", "Owner", "Priority", "Received", "Due", "Status", "Overdue", "Escalated"]
-          : ["CommID", "External Party", "Category", "Subject", "Owner", "Priority", "Due", "Status", "Overdue", "Escalated"]}
+          ? ["CommID", "Case Reference", "External Party", "Subject", "Owner", "Priority", "Received", "Due", "Status", "Overdue", "Escalated", "Deeplink"]
+          : ["CommID", "External Party", "Category", "Subject", "Owner", "Priority", "Due", "Status", "Overdue", "Escalated", "Deeplink"]}
         rows={filtered.map((r) => ({
           key: r.recordId || r.id,
           legal: r.cat === "Legal",
@@ -530,7 +690,7 @@ function CommTable({
             ? [
                 <span className="link" key="id">{r.id}</span>,
                 r.caseRef || "—",
-                r.party || "—",
+                r.party || (r.partyId ? "Linked party" : "—"),
                 r.subj,
                 r.owner,
                 priBadge(r.pri),
@@ -539,11 +699,16 @@ function CommTable({
                 <>{statusBadge(r.status)}{commLocked(r) ? " 🔒" : ""}</>,
                 flagBadge(r.isOverdue, "Overdue", "On Track"),
                 flagBadge(r.isEscalated, "Escalated", "Not Escalated"),
+                cleanRecordGuid(r.recordId) ? (
+                  <button key="link" className="btn btn-outline btn-mini" type="button" onClick={(e) => void copyRowLink(r, e)}>
+                    {copiedId === (r.recordId || r.id) ? "Copied" : "Copy link"}
+                  </button>
+                ) : "—",
               ]
             : [
                 <span className="link" key="id">{r.id}</span>,
-                r.party || "—",
-                r.partyId ? catBadge(r.cat) : "—",
+                r.party || (r.partyId ? "Linked party" : "—"),
+                r.categoryAssigned ? catBadge(r.cat) : "—",
                 r.subj,
                 r.owner,
                 priBadge(r.pri),
@@ -551,6 +716,11 @@ function CommTable({
                 <>{statusBadge(r.status)}{commLocked(r) ? " 🔒" : ""}</>,
                 flagBadge(r.isOverdue, "Overdue", "On Track"),
                 flagBadge(r.isEscalated, "Escalated", "Not Escalated"),
+                cleanRecordGuid(r.recordId) ? (
+                  <button key="link" className="btn btn-outline btn-mini" type="button" onClick={(e) => void copyRowLink(r, e)}>
+                    {copiedId === (r.recordId || r.id) ? "Copied" : "Copy link"}
+                  </button>
+                ) : "—",
               ],
         }))}
       />
@@ -570,7 +740,10 @@ function IntakeScreen({
 }) {
   const db = useStore();
   const [status, setStatus] = useState("All");
-  const rows = db.intake.filter((x) => `${x.from} ${x.to} ${x.subj} ${x.match}`.toLowerCase().includes(q.toLowerCase()) && (status === "All" || x.status === status));
+  const rows = db.intake.filter((x) =>
+    matchesSearch(q, x.from, x.to, x.subj, x.match, x.recv, x.status, x.owner, x.commId, x.threadAction, x.match ? "" : "unmatched")
+    && (status === "All" || x.status === status)
+  );
   return (
     <>
       <PageHead title="Central Mailbox" sub={`${db.intake.length} emails to ${MAILBOX_MAHA}, ${MAILBOX_TEST}, ${MAILBOX_PROD}`}>
@@ -658,7 +831,7 @@ function DocTable({
             r.name,
             r.party,
             <span className="mono" key="exp">{r.expiry}</span>,
-            daysBetween(TODAY, r.expiry),
+            r.daysRemaining ?? daysBetween(TODAY, r.expiry),
             priBadge(r.risk),
             statusBadge(docState(r)),
             r.owner,
@@ -673,12 +846,13 @@ function DocTable({
 }
 
 function RenewalCalendar({
-  month, view, q, setQ, onMonth, onView, onOpen, onRenew, onNew,
+  month, view, q, setQ, docs, onMonth, onView, onOpen, onRenew, onNew,
 }: {
   month: string;
   view: "cal" | "list" | "risk";
   q: string;
   setQ: (v: string) => void;
+  docs: License[];
   onMonth: (v: string) => void;
   onView: (v: "cal" | "list" | "risk") => void;
   onOpen: (row: License) => void;
@@ -691,8 +865,8 @@ function RenewalCalendar({
   const lead = first.getDay();
   const len = new Date(Y, M, 0).getDate();
   const label = first.toLocaleString("en-GB", { month: "long", year: "numeric" });
-  const inMonth = db.docs.filter((x) => x.expiry.startsWith(month));
-  const expiring = db.docs.filter((x) => docState(x) === "Expiring");
+  const inMonth = docs.filter((x) => x.expiry.startsWith(month));
+  const expiring = docs.filter((x) => docState(x) === "Expiring");
   const shift = (n: number) => {
     const d = new Date(Y, M - 1 + n, 1);
     onMonth(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
@@ -749,7 +923,7 @@ function RenewalCalendar({
       )}
       {view === "list" && (
         <DocTable
-          rows={[...db.docs].sort((a, b) => a.expiry.localeCompare(b.expiry))}
+          rows={[...docs].sort((a, b) => a.expiry.localeCompare(b.expiry))}
           q={q}
           setQ={setQ}
           typeFilter="All"
@@ -769,7 +943,7 @@ function RenewalCalendar({
                 <tr key={risk}>
                   <td><b>{risk} risk</b></td>
                   {[0, 1, 2].map((band) => {
-                    const list = db.docs.filter((x) => {
+                    const list = docs.filter((x) => {
                       const t = daysBetween(TODAY, x.expiry);
                       const b = t < 30 ? 0 : t <= 90 ? 1 : 2;
                       return (x.risk === risk || (risk === "High" && x.risk === "Critical")) && b === band;
@@ -790,27 +964,7 @@ function RenewalCalendar({
           </table>
         </div>
       )}
-      {db.renewals.length > 0 && (
-        <>
-          <h2 className="sec">Renewal cycles ({db.renewals.length})</h2>
-          <DataTable
-            cols={["ID", "Document", "Type", "Status", "Due", "Risk", "Escalation", "Owner"]}
-            rows={db.renewals.map((r) => ({
-              key: r.recordId || r.id,
-              cells: [
-                r.id,
-                r.documentName || "—",
-                statusBadge(r.type),
-                statusBadge(r.status),
-                <span className="mono" key="due">{formatDateTime(r.due)}</span>,
-                priBadge(r.risk),
-                r.escalation,
-                r.owner || "—",
-              ],
-            }))}
-          />
-        </>
-      )}
+      {db.renewals.length > 0 && <RenewalTaskTable rows={db.renewals} />}
     </>
   );
 }
@@ -1020,38 +1174,17 @@ function Modals({
   }
   if (modal.kind === "close") {
     const r = db.comms.find((c) => c.id === modal.comm.id) || modal.comm;
-    const emails = threadEmails(r);
     return (
       <Overlay kind="modal" title={`Close — ${r.id}`} sub={r.party} onClose={onClose} footer={null}>
-        <form onSubmit={(e) => {
-          e.preventDefault();
-          const cmt = String(new FormData(e.currentTarget).get("cmt") || "").trim();
-          if (!cmt) return onFail("A closure comment is required");
-          void go(`${r.id} closed`, () => closeComm(r.id, cmt));
-        }}>
-          <div className="form">
-            <div><label>Outcome</label><select><option>Responded and accepted</option><option>Responded — no reply required</option><option>Withdrawn by external party</option></select></div>
-            <div className="wide"><label>Closure comment *</label><textarea name="cmt" rows={3} required placeholder="How was the request satisfied?" /></div>
-          </div>
-          <h2 className="sec">Email evidence ({emails.length})</h2>
-          {emails.length ? emails.map((mail) => (
-            <div className="att" key={mail.id}>
-              <div className="fx">{mail.isReply ? "↩" : "✉"}</div>
-              <div>
-                <b>{mail.subject}</b>
-                <br />
-                <span style={{ color: "var(--muted)" }}>{formatDateTime(mail.sentOn)} · {mail.direction} · {mail.from}</span>
-              </div>
-            </div>
-          )) : (
-            <div className="note">No emails on this thread yet. Close loads evidence from the Emails table (original + replies).</div>
-          )}
-          <div className="note">Closing sets <b>Lifecycle Status = Closed</b>. The <b>Capture closed date and person</b> flow stamps Closed By and Closure Date/Time.</div>
-          <div className="df" style={{ margin: "16px -20px -20px" }}>
-            <button className="btn btn-primary" type="submit" disabled={busy}>Close Record</button>
-            <button className="btn btn-ghost" type="button" onClick={onClose}>Cancel</button>
-          </div>
-        </form>
+        <CloseCommForm
+          row={r}
+          busy={busy}
+          onCancel={onClose}
+          onSubmit={(cmt) => {
+            if (!cmt) return onFail("A closure comment is required");
+            void go(`${r.id} closed`, () => closeComm(r.id, cmt));
+          }}
+        />
       </Overlay>
     );
   }
@@ -1094,6 +1227,42 @@ function Modals({
           </div>
           <div className="df" style={{ margin: "16px -20px -20px" }}>
             <button className="btn btn-primary" type="submit" disabled={busy}>Run manual escalation</button>
+            <button className="btn btn-ghost" type="button" onClick={onClose}>Cancel</button>
+          </div>
+        </form>
+      </Overlay>
+    );
+  }
+  if (modal.kind === "escalateDoc") {
+    const r = db.docs.find((d) => d.id === modal.doc.id || d.recordId === modal.doc.recordId) || modal.doc;
+    if (r.isEscalated) {
+      return (
+        <Overlay kind="modal" title={`Already escalated — ${r.id}`} sub="License escalation runs once" onClose={onClose} footer={null}>
+          <dl className="kv">
+            <dt>Is Escalated</dt><dd>Yes</dd>
+            <dt>Escalation reason</dt><dd>{r.escalationReason || "—"}</dd>
+            <dt>Escalated by</dt><dd>{r.escalatedBy || "—"}</dd>
+          </dl>
+        </Overlay>
+      );
+    }
+    return (
+      <Overlay kind="modal" title={`Escalate document — ${r.id}`} sub={r.name} onClose={onClose} footer={null}>
+        <form onSubmit={(e) => {
+          e.preventDefault();
+          const reason = String(new FormData(e.currentTarget).get("reason") || "").trim();
+          if (!reason) return onFail("Escalation reason is required");
+          void go(`${r.id} escalated`, () => escalateLicense(r.id, reason, ME));
+        }}>
+          <div className="form">
+            <div className="wide">
+              <label>Escalation reason *</label>
+              <textarea name="reason" rows={3} required minLength={3} placeholder="Why is this being escalated?" />
+            </div>
+          </div>
+          <div className="note">Sets <b>Is Escalated = Yes</b> on the license, marks the renewal L1, and logs an Escalation notification.</div>
+          <div className="df" style={{ margin: "16px -20px -20px" }}>
+            <button className="btn btn-primary" type="submit" disabled={busy}>Escalate</button>
             <button className="btn btn-ghost" type="button" onClick={onClose}>Cancel</button>
           </div>
         </form>
@@ -1161,8 +1330,11 @@ function Modals({
       ) : (
         <>
           <button className="btn btn-primary" type="button" disabled={busy} onClick={() => void go(`${x.name} renewed`, () => renewDoc(x.id))}>Renew (+12 months)</button>
-          {!x.notified && <button className="btn btn-outline" type="button" disabled={busy} onClick={() => void go("Notification sent", () => sendRenewalNotice(x.id))}>Send Notification</button>}
+          <button className="btn btn-outline" type="button" disabled={busy} onClick={() => void go("Notification sent", () => sendRenewalNotice(x.id))}>Send Notification</button>
           <button className="btn btn-outline" type="button" disabled={busy} onClick={() => void go("Completion recorded", () => completeCycle(x.id))}>Record Completion</button>
+          {!x.isEscalated && x.isOverdue ? (
+            <button className="btn btn-outline" type="button" disabled={busy} onClick={() => void go(`${x.id} escalated`, () => escalateLicense(x.id, "Manual escalation from document record", ME))}>Escalate</button>
+          ) : null}
           <button className="btn btn-ghost" type="button" onClick={onClose}>Close</button>
         </>
       )}
@@ -1172,16 +1344,21 @@ function Modals({
         <dt>Issuing authority</dt><dd>{x.auth || "—"}</dd>
         <dt>Issue date</dt><dd className="mono">{x.issue}</dd>
         <dt>Expiry date</dt><dd className="mono">{x.expiry}</dd>
-        <dt>Days to expiry</dt><dd>{left}</dd>
+        <dt>Days to expiry</dt><dd>{x.daysRemaining ?? left}</dd>
         <dt>Risk grade</dt><dd>{priBadge(x.risk)}</dd>
         <dt>Status</dt><dd>{statusBadge(docState(x))}</dd>
+        <dt>Reminder threshold</dt><dd>{x.reminderThreshold || DEFAULT_REMINDER_THRESHOLD} days</dd>
+        <dt>Reminder sent</dt><dd>{flagBadge(!!x.reminderSent || !!x.notified, "Sent", "Not sent")}</dd>
+        <dt>Overdue</dt><dd>{flagBadge(!!x.isOverdue, "Overdue", "On Track")}</dd>
+        <dt>Escalated</dt><dd>{flagBadge(!!x.isEscalated, "Escalated", "Not Escalated")}</dd>
         <dt>Owner</dt><dd>{x.owner || "—"}</dd>
         <dt>Business unit</dt><dd>{x.bu || "—"}</dd>
-        <dt>Notification sent</dt><dd>{x.notified || <span className="badge b-warn">Not sent</span>}</dd>
+        <dt>Current renewal</dt><dd>{x.currentRenewalName || x.currentRenewalId || "—"}</dd>
+        <dt>Notification sent</dt><dd>{x.notified ? formatDateTime(x.notified) : <span className="badge b-warn">Not sent</span>}</dd>
         <dt>Renewal completion</dt><dd>{x.done || "—"}</dd>
       </dl>
       {locked ? <div className="note"><b>This renewal cycle is closed and read only.</b> Completion recorded {x.done}.</div> : null}
-      <div className="note">The notification window opens <b>120 days before expiry</b>. <b>Renew</b> extends expiry by twelve months.</div>
+      <div className="note">Risk is calculated from days remaining. The reminder window is the threshold on the record (default {DEFAULT_REMINDER_THRESHOLD} days). <b>Renew</b> extends expiry by twelve months and closes the open renewal task.</div>
     </Overlay>
   );
 }
@@ -1300,7 +1477,8 @@ function DocForm({ onCancel, onSave }: { onCancel: () => void; onSave: () => voi
         auth: String(f.get("auth")),
         issue: String(f.get("issue")),
         expiry: String(f.get("expiry")),
-        risk: String(f.get("risk")) as License["risk"],
+        risk: "Medium",
+        reminderThreshold: Number(f.get("threshold")) || DEFAULT_REMINDER_THRESHOLD,
         owner: String(f.get("owner")),
         bu: db.businessUnits.find((u) => u.id === String(f.get("bu")))?.name || String(f.get("bu") || ""),
         buId: String(f.get("bu") || "") || undefined,
@@ -1315,7 +1493,7 @@ function DocForm({ onCancel, onSave }: { onCancel: () => void; onSave: () => voi
       <div className="form">
         <div className="wide"><label>Document name *</label><input name="name" required /></div>
         <div><label>Type *</label><select name="type"><option>License</option><option>Contract</option><option>Permit</option></select></div>
-        <div><label>Risk</label><select name="risk"><option>High</option><option>Medium</option><option>Low</option><option>Critical</option></select></div>
+        <div><label>Reminder threshold (days)</label><input name="threshold" type="number" min={1} defaultValue={DEFAULT_REMINDER_THRESHOLD} /></div>
         <div><label>External party *</label><select name="party">{db.parties.map((p) => <option key={p.id}>{p.name}</option>)}</select></div>
         <div><label>Issuing authority</label><input name="auth" /></div>
         <div><label>Issue date *</label><input name="issue" type="date" defaultValue={TODAY} required /></div>
@@ -1329,6 +1507,7 @@ function DocForm({ onCancel, onSave }: { onCancel: () => void; onSave: () => voi
           </select>
         </div>
       </div>
+      <div className="note">Days remaining and risk are calculated from the expiry date. If the document is already inside the reminder threshold, a renewal task and notification are created immediately.</div>
       <div className="df" style={{ margin: "16px -20px -20px" }}>
         <button className="btn btn-primary" type="submit" disabled={busy}>Create Document</button>
         <button className="btn btn-ghost" type="button" onClick={onCancel}>Cancel</button>

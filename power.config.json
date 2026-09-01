@@ -73,6 +73,11 @@
           "entitySetName": "activitymimeattachments",
           "logicalName": "activitymimeattachment",
           "isHidden": false
+        },
+        "notifications": {
+          "entitySetName": "erc_notifications",
+          "logicalName": "erc_notification",
+          "isHidden": false
         }
       },
       "environmentVariableName": ""

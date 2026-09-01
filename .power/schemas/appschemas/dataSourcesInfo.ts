@@ -61,6 +61,13 @@ export const dataSourcesInfo = {
     "dataSourceType": "Dataverse",
     "apis": {}
   },
+  "erc_notifications": {
+    "tableId": "",
+    "version": "",
+    "primaryKey": "erc_notificationid",
+    "dataSourceType": "Dataverse",
+    "apis": {}
+  },
   "erc_renewals": {
     "tableId": "",
     "version": "",

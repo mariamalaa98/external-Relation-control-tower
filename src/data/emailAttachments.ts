@@ -5,7 +5,16 @@ import { EmailsService } from "../generated/services/EmailsService";
 import type { EmailAttachment } from "./types";
 
 const ATTACHMENT_TABLES = ["activitymimeattachments", "activitymimeattachment"] as const;
-const client = getClient(dataSourcesInfo);
+let cachedClient: ReturnType<typeof getClient> | null | undefined;
+function attachmentClient() {
+  if (cachedClient !== undefined) return cachedClient;
+  try {
+    cachedClient = getClient(dataSourcesInfo);
+  } catch {
+    cachedClient = null;
+  }
+  return cachedClient;
+}
 
 export const EMAIL_ATTACHMENT_EXPAND =
   "email_activity_mime_attachment($select=activitymimeattachmentid,filename,filesize,mimetype,subject,attachmentcontentid,body)";
@@ -141,8 +150,9 @@ async function fromEmailExpand(emailId: string): Promise<EmailAttachment[]> {
 }
 
 async function fromAttachmentTable(emailId: string): Promise<EmailAttachment[]> {
+  const client = attachmentClient();
   const id = cleanGuid(emailId);
-  if (!id) return [];
+  if (!client || !id) return [];
   const filters = [
     `_objectid_value eq ${id}`,
     `_objectid_value eq '${id}'`,
@@ -217,6 +227,8 @@ export async function fetchAttachmentContent(att: EmailAttachment): Promise<{ by
     };
   }
 
+  const client = attachmentClient();
+  if (!client) throw new Error("Attachments are not available in this session");
   for (const table of ATTACHMENT_TABLES) {
     try {
       const result = await client.retrieveRecordAsync<ActivityMimeAttachment>(

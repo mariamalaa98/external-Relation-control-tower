@@ -129,16 +129,13 @@ export function findThread(comms: Communication[], email: IntakeEmail) {
 
 export function applyFormulaFields(row: Communication, now = new Date()): Communication {
   const createdOn = row.createdOn || row.rec;
-  const noParty = !row.partyId && !row.party;
-  const pri = noParty ? "None" as const : row.pri;
   if (row.overdueFromColumn) {
-    return { ...row, createdOn, pri };
+    return { ...row, createdOn };
   }
   const due = row.due && parseDate(row.due) ? row.due : dueFromCreated(createdOn);
   return {
     ...row,
     createdOn,
-    pri,
     due,
     isOverdue: computeIsOverdue({ ...row, createdOn }, now),
   };

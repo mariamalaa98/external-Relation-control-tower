@@ -99,6 +99,7 @@ h1{font-size:21px;font-weight:600;margin:0;letter-spacing:-.2px}
 /* ---------- filters ---------- */
 .filters{display:flex;flex-wrap:wrap;gap:10px;padding:14px 18px;background:var(--panel);
   border:1px solid var(--line);border-radius:10px;margin-bottom:14px;align-items:flex-end}
+.org-filters .ffld{min-width:220px}
 .ffld{display:flex;flex-direction:column;gap:4px;min-width:158px}
 .ffld>span{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.7px;color:var(--bronze-ink)}
 .ffld input,.ffld select{width:100%}
@@ -293,6 +294,8 @@ button.toptab{width:auto}
 .mdf-field input[readonly],.mdf-field textarea[readonly]{background:#f3f2f1;color:#605e5c}
 .mdf-field textarea{min-height:52px;resize:vertical}
 .mdf-field .hint{font-size:11px;color:var(--muted);margin-top:4px}
+.deeplink-row{display:flex;gap:8px;align-items:center}
+.deeplink-row input{flex:1;min-width:0;font-size:12px;font-family:Consolas,"Courier New",monospace}
 .lookup{display:flex;align-items:center;gap:8px;border:1px solid #8a8886;border-radius:2px;padding:6px 8px;background:#fff;min-height:32px}
 .lookup.muted-val{background:#f3f2f1;color:#605e5c}
 .avail{margin-left:auto;font-size:11px;color:var(--ok);font-weight:600}
@@ -301,6 +304,7 @@ button.toptab{width:auto}
 .summary-chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:18px}
 .comm-hero{margin:0 0 14px;padding:10px 12px;background:var(--cream,#F7F2E8);border-radius:8px}
 .email-thread{display:flex;flex-direction:column;gap:14px;padding:16px;border:1px solid var(--line);border-top:none;border-radius:0 0 10px 10px;background:#f6f5f3}
+.email-thread.standalone{border-top:1px solid var(--line);border-radius:10px;max-height:46vh;overflow:auto;margin-top:4px}
 .email-card{background:#fff;border:1px solid var(--line);border-radius:10px;padding:14px 16px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
 .email-card.out{border-left:3px solid var(--gold)}
 .email-card.in{border-left:3px solid var(--bronze)}

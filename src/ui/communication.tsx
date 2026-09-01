@@ -10,11 +10,14 @@ import {
   ME,
   canManualEscalate,
   commLocked,
+  communicationDeepLink,
+  copyText,
   formatDateTime,
   loadCommThread,
   loadEmailAttachmentFile,
   overdueLabel,
   saveComm,
+  sameId,
   threadEmails,
   useStore,
   yesNo,
@@ -53,13 +56,22 @@ export function CommRecordForm({
   const [saving, setBusy] = useState(false);
   const [tab, setTab] = useState<"general" | "email">("general");
   const [threadBusy, setThreadBusy] = useState(false);
+  const [copiedLink, setCopiedLink] = useState(false);
   const hasParty = !!row.partyId;
   const partyLabel = row.party || (hasParty ? "Linked party" : "None");
+  const deepLink = communicationDeepLink(row.recordId);
 
   useEffect(() => {
     setThreadBusy(true);
     void loadCommThread(row).finally(() => setThreadBusy(false));
   }, [row.id, row.recordId]);
+
+  async function copyDeepLink() {
+    const ok = await copyText(deepLink);
+    setCopiedLink(ok);
+    if (ok) onSaved("Deeplink copied");
+    window.setTimeout(() => setCopiedLink(false), 1600);
+  }
 
   async function save(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -78,10 +90,39 @@ export function CommRecordForm({
         status: String(f.get("status") || row.status) as Communication["status"],
         slaId: String(f.get("sla") || row.slaId || ""),
         slaName: db.sla.find((s) => s.id === String(f.get("sla")))?.name || row.slaName,
-        pri: partyId ? row.pri : "None",
         cat: partyId ? row.cat : (String(f.get("cat") || row.cat) as Communication["cat"]),
       });
       onSaved("Communication saved");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function chooseParty(partyId: string) {
+    if (locked || saving) return;
+    const party = db.parties.find((p) => p.id === partyId);
+    setBusy(true);
+    try {
+      await saveComm(row.id, {
+        partyId,
+        party: party?.name || "",
+      });
+      onSaved(party ? `External party: ${party.name}` : "External party cleared");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function chooseCategory(cat: string) {
+    if (locked || saving || hasParty) return;
+    setBusy(true);
+    try {
+      await saveComm(row.id, {
+        partyId: "",
+        party: "",
+        cat: cat as Communication["cat"],
+      });
+      onSaved(cat ? `Category: ${cat}` : "Category cleared");
     } finally {
       setBusy(false);
     }
@@ -118,8 +159,8 @@ export function CommRecordForm({
         <button className="cmd" type="button" disabled={locked || busy} onClick={onRespond}>Respond</button>
       </div>
       <div className="summary-chips comm-hero">
-            {hasParty ? catBadge(row.cat) : (row.categoryAssigned ? catBadge(row.cat) : <span className="badge b-gray">No party</span>)}
-        {priBadge(hasParty ? row.pri : "None")}
+            {row.categoryAssigned ? catBadge(row.cat) : <span className="badge b-gray">Unassigned</span>}
+        {priBadge(row.pri)}
         {statusBadge(row.status)}
         {flagBadge(row.isOverdue, "Overdue", "On Track")}
         {flagBadge(row.isEscalated, "Escalated", "Not Escalated")}
@@ -134,16 +175,21 @@ export function CommRecordForm({
         <EmailThreadPanel emails={emails} loading={threadBusy} />
       ) : null}
       <div hidden={tab !== "general"}>
-          <form id="comm-form" className="mdf" onSubmit={save} key={`${row.id}-${row.partyId || ""}-${row.party}-${row.isEscalated}-${row.status}-${row.closed || ""}`}>
+          <form id="comm-form" className="mdf" onSubmit={save} key={`${row.id}-${row.partyId || ""}-${row.party}-${row.cat}-${row.categoryAssigned}-${row.isEscalated}-${row.status}-${row.closed || ""}`}>
             <div className="mdf-sec">Identity</div>
             <Field label="Owner">
               <div className="lookup">{row.owner || ME} <span className="avail">Available</span></div>
             </Field>
             <Field label="External Party">
-              <select name="partyId" defaultValue={row.partyId || ""} disabled={locked}>
+              <select
+                name="partyId"
+                defaultValue={db.parties.find((p) => sameId(p.id, row.partyId))?.id || row.partyId || ""}
+                disabled={locked || saving}
+                onChange={(e) => void chooseParty(e.target.value)}
+              >
                 <option value="">None — not related to an external party</option>
                 {db.parties.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                {row.partyId && !db.parties.some((p) => p.id === row.partyId) ? (
+                {row.partyId && !db.parties.some((p) => sameId(p.id, row.partyId)) ? (
                   <option value={row.partyId}>{row.party || "Linked party"}</option>
                 ) : null}
               </select>
@@ -163,6 +209,18 @@ export function CommRecordForm({
             <Field label="Email Subject" wide>
               <input name="emailSubject" defaultValue={row.emailSubject || row.subj} disabled={locked} />
             </Field>
+            <Field label="Record GUID" wide>
+              <input readOnly value={row.recordId || ""} />
+            </Field>
+            <Field label="Deeplink" wide>
+              <div className="deeplink-row">
+                <input readOnly value={deepLink} />
+                <button className="btn btn-outline btn-mini" type="button" onClick={() => void copyDeepLink()}>
+                  {copiedLink ? "Copied" : "Copy"}
+                </button>
+              </div>
+              <div className="hint">Power Automate: put this URL in the email. Parameter <b>comm</b> must be <b>erc_communicationid</b> (the GUID), not CommID. Do not add tenantId.</div>
+            </Field>
             <Field label="Description" wide>
               <textarea name="description" rows={3} defaultValue={row.description || ""} disabled={locked} />
             </Field>
@@ -172,17 +230,22 @@ export function CommRecordForm({
               {hasParty ? (
                 <div className="readonly-val">{row.cat || "—"}</div>
               ) : (
-                <select name="cat" defaultValue={row.categoryAssigned ? row.cat : ""} disabled={locked}>
+                <select
+                  name="cat"
+                  defaultValue={row.categoryAssigned ? row.cat : ""}
+                  disabled={locked || saving}
+                  onChange={(e) => void chooseCategory(e.target.value)}
+                >
                   <option value="">Unassigned</option>
                   {CATS.map((c) => <option key={c}>{c}</option>)}
                 </select>
               )}
             </Field>
             <Field label="Priority">
-              <div className="readonly-val">{hasParty ? (row.pri || "—") : "None"}</div>
+              <div className="readonly-val">{row.pri || "—"}</div>
             </Field>
             <Field label="Business Unit">
-              <div className="readonly-val">{hasParty ? (row.bu || "—") : "—"}</div>
+              <div className="readonly-val">{row.bu || "—"}</div>
             </Field>
             <Field label="SLA">
               <select name="sla" defaultValue={row.slaId || ""} disabled={locked}>
@@ -227,7 +290,7 @@ export function CommRecordForm({
           </form>
           <h2 className="sec">Timeline</h2>
           <ul className="tl">
-            {row.log.map((e, i) => (
+            {row.log?.map((e, i) => (
               <li key={i}><b>{e.title}</b><span>{e.meta}</span></li>
             ))}
           </ul>
@@ -239,19 +302,66 @@ export function CommRecordForm({
   );
 }
 
-function EmailThreadPanel({ emails, loading }: { emails: ThreadEmail[]; loading: boolean }) {
+export function CloseCommForm({
+  row,
+  busy,
+  onCancel,
+  onSubmit,
+}: {
+  row: Communication;
+  busy: boolean;
+  onCancel: () => void;
+  onSubmit: (comment: string) => void;
+}) {
+  const emails = threadEmails(row);
+  const [threadBusy, setThreadBusy] = useState(false);
+
+  useEffect(() => {
+    setThreadBusy(true);
+    void loadCommThread(row).finally(() => setThreadBusy(false));
+  }, [row.id, row.recordId]);
+
+  return (
+    <form onSubmit={(e) => {
+      e.preventDefault();
+      const cmt = String(new FormData(e.currentTarget).get("cmt") || "").trim();
+      if (!cmt) return;
+      onSubmit(cmt);
+    }}>
+      <div className="form">
+        <div><label>Outcome</label><select><option>Responded and accepted</option><option>Responded — no reply required</option><option>Withdrawn by external party</option></select></div>
+        <div className="wide"><label>Closure comment *</label><textarea name="cmt" rows={3} required placeholder="How was the request satisfied?" /></div>
+      </div>
+      <h2 className="sec">Email evidence ({emails.length})</h2>
+      <EmailThreadPanel emails={emails} loading={threadBusy} className="standalone" />
+      <div className="note">Closing sets <b>Lifecycle Status = Closed</b>. The <b>Capture closed date and person</b> flow stamps Closed By and Closure Date/Time.</div>
+      <div className="df" style={{ margin: "16px -20px -20px" }}>
+        <button className="btn btn-primary" type="submit" disabled={busy}>Close Record</button>
+        <button className="btn btn-ghost" type="button" onClick={onCancel}>Cancel</button>
+      </div>
+    </form>
+  );
+}
+
+export function EmailThreadPanel({
+  emails,
+  loading,
+  className,
+}: {
+  emails: ThreadEmail[];
+  loading: boolean;
+  className?: string;
+}) {
   if (loading && !emails.length) {
     return <div className="note">Loading emails from the Emails table…</div>;
   }
   if (!emails.length) {
     return (
-      <div className="tabbody">
-        <div className="note">No emails linked yet. Replies appear here when Server-Side Sync writes them to the Emails table (same Regarding record or conversation index).</div>
-      </div>
+      <div className="note">No emails linked yet. Replies appear here when Server-Side Sync writes them to the Emails table (same Regarding record or conversation index).</div>
     );
   }
   return (
-    <div className="email-thread">
+    <div className={["email-thread", className].filter(Boolean).join(" ")}>
       {emails.map((mail) => (
         <article className={`email-card ${mail.direction === "Outbound" ? "out" : "in"}`} key={mail.id}>
           <header className="email-card-head">
@@ -398,6 +508,7 @@ export function EscalationCenter({
   q,
   setQ,
   busy,
+  comms,
   onOpen,
   onRunAuto,
   onEscalate,
@@ -405,15 +516,16 @@ export function EscalationCenter({
   q: string;
   setQ: (v: string) => void;
   busy: boolean;
+  comms: Communication[];
   onOpen: (row: Communication) => void;
   onRunAuto: () => void;
   onEscalate: (row: Communication) => void;
 }) {
   const db = useStore();
-  const overdueOpen = db.comms.filter((c) => c.status !== "Closed" && c.isOverdue && !c.isEscalated);
-  const auto = db.comms.filter((c) => c.isAutomaticallyEscalated);
-  const manual = db.comms.filter((c) => c.isManuallyEscalated);
-  const rows = db.comms.filter((c) => {
+  const overdueOpen = comms.filter((c) => c.status !== "Closed" && c.isOverdue && !c.isEscalated);
+  const auto = comms.filter((c) => c.isAutomaticallyEscalated);
+  const manual = comms.filter((c) => c.isManuallyEscalated);
+  const rows = comms.filter((c) => {
     const blob = `${c.id} ${c.party} ${c.subj} ${c.owner}`.toLowerCase();
     return blob.includes(q.toLowerCase()) && (c.isOverdue || c.isEscalated);
   });

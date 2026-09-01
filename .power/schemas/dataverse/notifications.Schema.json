@@ -1,14 +1,14 @@
 {
-  "name": "erc_externalparty",
-  "title": "External Party Masters",
+  "name": "erc_notification",
+  "title": "Notifications",
   "schema": {
     "type": "array",
     "items": {
       "type": "object",
       "x-ms-dataverse-entity": true,
-      "x-ms-dataverse-entityset": "erc_externalparties",
-      "x-ms-dataverse-primary-id": "erc_externalpartyid",
-      "x-ms-dataverse-primary-name": "erc_partyname",
+      "x-ms-dataverse-entityset": "erc_notifications",
+      "x-ms-dataverse-primary-id": "erc_notificationid",
+      "x-ms-dataverse-primary-name": "erc_notificationtitle",
       "properties": {
         "createdby": {
           "type": "string",
@@ -72,193 +72,12 @@
           "required": true,
           "maxLength": 100
         },
-        "erc_active": {
+        "erc_isread": {
           "type": "string",
-          "title": "Active",
-          "x-ms-dataverse-attribute": "erc_active",
+          "title": "Is Read",
+          "x-ms-dataverse-attribute": "erc_isread",
           "x-ms-dataverse-type": "BooleanType",
-          "x-ms-schema-name": "erc_Active",
-          "enum": [
-            "True",
-            "False"
-          ],
-          "x-ms-enum-values": [
-            0,
-            1
-          ],
-          "Color": [
-            null,
-            null
-          ],
-          "x-ms-optionsetmetadataid": "93205858-106a-43a7-b97a-7a8440c25c92",
-          "x-ms-isGlobal": false,
-          "x-ms-optionsetdisplayname": "Active",
-          "x-ms-optionSetType": "Boolean"
-        },
-        "erc_activename": {
-          "type": "string",
-          "title": "erc_activename",
-          "x-ms-dataverse-attribute": "erc_activename",
-          "x-ms-dataverse-type": "VirtualType",
-          "x-ms-schema-name": "erc_activeName",
-          "x-ms-read-only": true
-        },
-        "erc_businessunit": {
-          "type": "string",
-          "title": "Business Unit",
-          "x-ms-dataverse-attribute": "erc_businessunit",
-          "x-ms-dataverse-type": "LookupType",
-          "x-ms-schema-name": "erc_BusinessUnit"
-        },
-        "erc_businessunitname": {
-          "type": "string",
-          "title": "erc_businessunitname",
-          "x-ms-dataverse-attribute": "erc_businessunitname",
-          "x-ms-dataverse-type": "StringType",
-          "x-ms-schema-name": "erc_BusinessUnitName",
-          "x-ms-read-only": true,
-          "maxLength": 160
-        },
-        "erc_category": {
-          "type": "string",
-          "title": "Category",
-          "x-ms-dataverse-attribute": "erc_category",
-          "x-ms-dataverse-type": "PicklistType",
-          "x-ms-schema-name": "erc_Category",
-          "enum": [
-            "Government",
-            "Insurance",
-            "Regulatory",
-            "Legal",
-            "Corporate",
-            " Partner"
-          ],
-          "x-ms-enum-values": [
-            1,
-            2,
-            3,
-            4,
-            5,
-            6
-          ],
-          "Color": [
-            null,
-            null,
-            null,
-            null,
-            null,
-            null
-          ],
-          "x-ms-optionsetmetadataid": "1cb7920f-b29f-f111-b8dc-00224882d001",
-          "x-ms-isGlobal": true,
-          "x-ms-optionsetdisplayname": "Category",
-          "x-ms-optionSetType": "Picklist"
-        },
-        "erc_categoryname": {
-          "type": "string",
-          "title": "erc_categoryname",
-          "x-ms-dataverse-attribute": "erc_categoryname",
-          "x-ms-dataverse-type": "VirtualType",
-          "x-ms-schema-name": "erc_categoryName",
-          "x-ms-read-only": true
-        },
-        "erc_contactperson": {
-          "type": "string",
-          "title": "Contact Person",
-          "x-ms-dataverse-attribute": "erc_contactperson",
-          "x-ms-dataverse-type": "StringType",
-          "x-ms-schema-name": "erc_ContactPerson",
-          "maxLength": 100
-        },
-        "erc_defaultowner": {
-          "type": "string",
-          "title": "Default Owner",
-          "x-ms-dataverse-attribute": "erc_defaultowner",
-          "x-ms-dataverse-type": "LookupType",
-          "x-ms-schema-name": "erc_DefaultOwner"
-        },
-        "erc_defaultownername": {
-          "type": "string",
-          "title": "erc_defaultownername",
-          "x-ms-dataverse-attribute": "erc_defaultownername",
-          "x-ms-dataverse-type": "StringType",
-          "x-ms-schema-name": "erc_DefaultOwnerName",
-          "x-ms-read-only": true,
-          "maxLength": 200
-        },
-        "erc_defaultowneryominame": {
-          "type": "string",
-          "title": "erc_defaultowneryominame",
-          "x-ms-dataverse-attribute": "erc_defaultowneryominame",
-          "x-ms-dataverse-type": "StringType",
-          "x-ms-schema-name": "erc_DefaultOwnerYomiName",
-          "x-ms-read-only": true,
-          "maxLength": 200
-        },
-        "erc_defaultpriority": {
-          "type": "string",
-          "title": "Default Priority",
-          "x-ms-dataverse-attribute": "erc_defaultpriority",
-          "x-ms-dataverse-type": "PicklistType",
-          "x-ms-schema-name": "erc_DefaultPriority",
-          "enum": [
-            "Low",
-            "Medium",
-            "High"
-          ],
-          "x-ms-enum-values": [
-            789180000,
-            789180001,
-            789180002
-          ],
-          "Color": [
-            null,
-            null,
-            null
-          ],
-          "x-ms-optionsetmetadataid": "b19b2b57-2ab2-4c08-b473-0cb5d94605be",
-          "x-ms-isGlobal": false,
-          "x-ms-optionsetdisplayname": "Default Priority",
-          "x-ms-optionSetType": "Picklist"
-        },
-        "erc_defaultpriorityname": {
-          "type": "string",
-          "title": "erc_defaultpriorityname",
-          "x-ms-dataverse-attribute": "erc_defaultpriorityname",
-          "x-ms-dataverse-type": "VirtualType",
-          "x-ms-schema-name": "erc_defaultpriorityName",
-          "x-ms-read-only": true
-        },
-        "erc_department": {
-          "type": "string",
-          "title": "Department",
-          "x-ms-dataverse-attribute": "erc_department",
-          "x-ms-dataverse-type": "LookupType",
-          "x-ms-schema-name": "erc_Department"
-        },
-        "erc_departmentname": {
-          "type": "string",
-          "title": "erc_departmentname",
-          "x-ms-dataverse-attribute": "erc_departmentname",
-          "x-ms-dataverse-type": "StringType",
-          "x-ms-schema-name": "erc_DepartmentName",
-          "x-ms-read-only": true,
-          "maxLength": 850
-        },
-        "erc_domain": {
-          "type": "string",
-          "title": "Domain",
-          "x-ms-dataverse-attribute": "erc_domain",
-          "x-ms-dataverse-type": "StringType",
-          "x-ms-schema-name": "erc_Domain",
-          "maxLength": 100
-        },
-        "erc_duplicateflag": {
-          "type": "string",
-          "title": "Duplicate Flag",
-          "x-ms-dataverse-attribute": "erc_duplicateflag",
-          "x-ms-dataverse-type": "BooleanType",
-          "x-ms-schema-name": "erc_DuplicateFlag",
+          "x-ms-schema-name": "erc_IsRead",
           "enum": [
             "False",
             "True"
@@ -271,189 +90,157 @@
             null,
             null
           ],
-          "x-ms-optionsetmetadataid": "8a030650-df68-4183-bd7a-839bc5609400",
+          "x-ms-optionsetmetadataid": "31738dce-bc83-42c8-80b9-01ffa816f100",
           "x-ms-isGlobal": false,
-          "x-ms-optionsetdisplayname": "Duplicate Flag",
+          "x-ms-optionsetdisplayname": "Is Read",
           "x-ms-optionSetType": "Boolean"
         },
-        "erc_duplicateflagname": {
+        "erc_isreadname": {
           "type": "string",
-          "title": "erc_duplicateflagname",
-          "x-ms-dataverse-attribute": "erc_duplicateflagname",
+          "title": "erc_isreadname",
+          "x-ms-dataverse-attribute": "erc_isreadname",
           "x-ms-dataverse-type": "VirtualType",
-          "x-ms-schema-name": "erc_duplicateflagName",
+          "x-ms-schema-name": "erc_isreadName",
           "x-ms-read-only": true
         },
-        "erc_escalationteam": {
+        "erc_licenseandcontract": {
           "type": "string",
-          "title": "Escalation Team",
-          "x-ms-dataverse-attribute": "erc_escalationteam",
+          "title": "License and Contract",
+          "x-ms-dataverse-attribute": "erc_licenseandcontract",
           "x-ms-dataverse-type": "LookupType",
-          "x-ms-schema-name": "erc_EscalationTeam"
+          "x-ms-schema-name": "erc_LicenseandContract"
         },
-        "erc_escalationteamname": {
+        "erc_licenseandcontractname": {
           "type": "string",
-          "title": "erc_escalationteamname",
-          "x-ms-dataverse-attribute": "erc_escalationteamname",
+          "title": "erc_licenseandcontractname",
+          "x-ms-dataverse-attribute": "erc_licenseandcontractname",
           "x-ms-dataverse-type": "StringType",
-          "x-ms-schema-name": "erc_EscalationTeamName",
+          "x-ms-schema-name": "erc_LicenseandContractName",
           "x-ms-read-only": true,
-          "maxLength": 160
+          "maxLength": 850
         },
-        "erc_escalationteamyominame": {
+        "erc_message": {
           "type": "string",
-          "title": "erc_escalationteamyominame",
-          "x-ms-dataverse-attribute": "erc_escalationteamyominame",
+          "title": "Message",
+          "x-ms-dataverse-attribute": "erc_message",
           "x-ms-dataverse-type": "StringType",
-          "x-ms-schema-name": "erc_EscalationTeamYomiName",
-          "x-ms-read-only": true,
-          "maxLength": 160
+          "x-ms-schema-name": "erc_Message",
+          "maxLength": 100
         },
-        "erc_externalpartyid": {
+        "erc_notificationid": {
           "type": "string",
-          "title": "External Party",
-          "x-ms-dataverse-attribute": "erc_externalpartyid",
+          "title": "Notification",
+          "x-ms-dataverse-attribute": "erc_notificationid",
           "x-ms-dataverse-type": "UniqueidentifierType",
-          "x-ms-schema-name": "erc_ExternalPartyId",
+          "x-ms-schema-name": "erc_NotificationId",
           "x-ms-dataverse-primary-id": true,
           "required": true,
           "x-ms-keyType": "primary"
         },
-        "erc_officialemail": {
+        "erc_notificationmessage": {
           "type": "string",
-          "title": "Official Email",
-          "x-ms-dataverse-attribute": "erc_officialemail",
-          "x-ms-dataverse-type": "StringType",
-          "x-ms-schema-name": "erc_OfficialEmail",
+          "title": "Notification Message",
+          "x-ms-dataverse-attribute": "erc_notificationmessage",
+          "x-ms-dataverse-type": "MemoType",
+          "x-ms-schema-name": "erc_NotificationMessage",
           "maxLength": 100
         },
-        "erc_partyname": {
+        "erc_notificationtitle": {
           "type": "string",
-          "title": "Party Name",
-          "x-ms-dataverse-attribute": "erc_partyname",
+          "title": "Notification Title",
+          "x-ms-dataverse-attribute": "erc_notificationtitle",
           "x-ms-dataverse-type": "StringType",
-          "x-ms-schema-name": "erc_PartyName",
+          "x-ms-schema-name": "erc_NotificationTitle",
           "x-ms-dataverse-primary-name": true,
           "maxLength": 850
         },
-        "erc_phone": {
+        "erc_notificationtype": {
           "type": "string",
-          "title": "Phone",
-          "x-ms-dataverse-attribute": "erc_phone",
-          "x-ms-dataverse-type": "StringType",
-          "x-ms-schema-name": "erc_Phone",
-          "maxLength": 100
-        },
-        "erc_priority": {
-          "type": "string",
-          "title": "Priority",
-          "x-ms-dataverse-attribute": "erc_priority",
+          "title": "Notification type",
+          "x-ms-dataverse-attribute": "erc_notificationtype",
           "x-ms-dataverse-type": "PicklistType",
-          "x-ms-schema-name": "erc_Priority",
+          "x-ms-schema-name": "erc_Notificationtype",
           "enum": [
-            "Critical",
-            "High",
-            "Medium",
-            "Low"
+            "Reminder",
+            "Expiry",
+            "Escalation"
           ],
           "x-ms-enum-values": [
             1,
             2,
-            3,
-            4
+            3
           ],
           "Color": [
             null,
             null,
+            null
+          ],
+          "x-ms-optionsetmetadataid": "e4f5b4a5-27a5-f111-b8de-00224882d001",
+          "x-ms-isGlobal": true,
+          "x-ms-optionsetdisplayname": "not_type",
+          "x-ms-optionSetType": "Picklist"
+        },
+        "erc_notificationtypename": {
+          "type": "string",
+          "title": "erc_notificationtypename",
+          "x-ms-dataverse-attribute": "erc_notificationtypename",
+          "x-ms-dataverse-type": "VirtualType",
+          "x-ms-schema-name": "erc_notificationtypeName",
+          "x-ms-read-only": true
+        },
+        "erc_renewal": {
+          "type": "string",
+          "title": "Renewal",
+          "x-ms-dataverse-attribute": "erc_renewal",
+          "x-ms-dataverse-type": "LookupType",
+          "x-ms-schema-name": "erc_Renewal"
+        },
+        "erc_renewalname": {
+          "type": "string",
+          "title": "erc_renewalname",
+          "x-ms-dataverse-attribute": "erc_renewalname",
+          "x-ms-dataverse-type": "StringType",
+          "x-ms-schema-name": "erc_RenewalName",
+          "x-ms-read-only": true,
+          "maxLength": 850
+        },
+        "erc_result": {
+          "type": "string",
+          "title": "Result",
+          "x-ms-dataverse-attribute": "erc_result",
+          "x-ms-dataverse-type": "PicklistType",
+          "x-ms-schema-name": "erc_Result",
+          "enum": [
+            "Sent ",
+            "Failed"
+          ],
+          "x-ms-enum-values": [
+            1,
+            2
+          ],
+          "Color": [
             null,
             null
           ],
-          "x-ms-optionsetmetadataid": "d9aad239-b29f-f111-b8dc-00224882d001",
+          "x-ms-optionsetmetadataid": "092aae9e-28a5-f111-b8de-00224882d001",
           "x-ms-isGlobal": true,
-          "x-ms-optionsetdisplayname": "Priority",
+          "x-ms-optionsetdisplayname": "result",
           "x-ms-optionSetType": "Picklist"
         },
-        "erc_priorityname": {
+        "erc_resultname": {
           "type": "string",
-          "title": "erc_priorityname",
-          "x-ms-dataverse-attribute": "erc_priorityname",
+          "title": "erc_resultname",
+          "x-ms-dataverse-attribute": "erc_resultname",
           "x-ms-dataverse-type": "VirtualType",
-          "x-ms-schema-name": "erc_priorityName",
+          "x-ms-schema-name": "erc_resultName",
           "x-ms-read-only": true
         },
-        "erc_replyresponsible": {
+        "erc_senton": {
           "type": "string",
-          "title": "Reply Responsible",
-          "x-ms-dataverse-attribute": "erc_replyresponsible",
-          "x-ms-dataverse-type": "LookupType",
-          "x-ms-schema-name": "erc_ReplyResponsible"
-        },
-        "erc_replyresponsiblename": {
-          "type": "string",
-          "title": "erc_replyresponsiblename",
-          "x-ms-dataverse-attribute": "erc_replyresponsiblename",
-          "x-ms-dataverse-type": "StringType",
-          "x-ms-schema-name": "erc_ReplyResponsibleName",
-          "x-ms-read-only": true,
-          "maxLength": 160
-        },
-        "erc_replyresponsibleyominame": {
-          "type": "string",
-          "title": "erc_replyresponsibleyominame",
-          "x-ms-dataverse-attribute": "erc_replyresponsibleyominame",
-          "x-ms-dataverse-type": "StringType",
-          "x-ms-schema-name": "erc_ReplyResponsibleYomiName",
-          "x-ms-read-only": true,
-          "maxLength": 160
-        },
-        "erc_replysla": {
-          "type": "string",
-          "title": "Reply SLA",
-          "x-ms-dataverse-attribute": "erc_replysla",
-          "x-ms-dataverse-type": "StringType",
-          "x-ms-schema-name": "erc_ReplySLA",
-          "maxLength": 100
-        },
-        "erc_specialhandlingnotes": {
-          "type": "string",
-          "title": "Special Handling Notes",
-          "x-ms-dataverse-attribute": "erc_specialhandlingnotes",
-          "x-ms-dataverse-type": "MemoType",
-          "x-ms-schema-name": "erc_SpecialHandlingNotes",
-          "maxLength": 100
-        },
-        "erc_subjectkeyword": {
-          "type": "string",
-          "title": "Subject",
-          "x-ms-dataverse-attribute": "erc_subjectkeyword",
-          "x-ms-dataverse-type": "StringType",
-          "x-ms-schema-name": "erc_SubjectKeyword",
-          "maxLength": 100
-        },
-        "erc_supervisor": {
-          "type": "string",
-          "title": "Supervisor",
-          "x-ms-dataverse-attribute": "erc_supervisor",
-          "x-ms-dataverse-type": "LookupType",
-          "x-ms-schema-name": "erc_Supervisor"
-        },
-        "erc_supervisorname": {
-          "type": "string",
-          "title": "erc_supervisorname",
-          "x-ms-dataverse-attribute": "erc_supervisorname",
-          "x-ms-dataverse-type": "StringType",
-          "x-ms-schema-name": "erc_SupervisorName",
-          "x-ms-read-only": true,
-          "maxLength": 200
-        },
-        "erc_supervisoryominame": {
-          "type": "string",
-          "title": "erc_supervisoryominame",
-          "x-ms-dataverse-attribute": "erc_supervisoryominame",
-          "x-ms-dataverse-type": "StringType",
-          "x-ms-schema-name": "erc_SupervisorYomiName",
-          "x-ms-read-only": true,
-          "maxLength": 200
+          "title": "Sent on",
+          "x-ms-dataverse-attribute": "erc_senton",
+          "x-ms-dataverse-type": "DateTimeType",
+          "x-ms-schema-name": "erc_Senton"
         },
         "importsequencenumber": {
           "type": "string",
@@ -620,7 +407,7 @@
             null,
             null
           ],
-          "x-ms-optionsetmetadataid": "c74a1aab-8dc7-4270-92b2-9aa982baa626",
+          "x-ms-optionsetmetadataid": "2863c64d-1a16-4a18-849a-f6fd540d88ca",
           "x-ms-isGlobal": false,
           "x-ms-optionsetdisplayname": "Status",
           "x-ms-optionSetType": "State"
@@ -651,7 +438,7 @@
             null,
             null
           ],
-          "x-ms-optionsetmetadataid": "88033e61-1bff-43e7-b379-c0d88e12b19c",
+          "x-ms-optionsetmetadataid": "90ff5f7d-322d-4ae0-ad51-412d78a146ed",
           "x-ms-isGlobal": false,
           "x-ms-optionsetdisplayname": "Status Reason",
           "x-ms-optionSetType": "Status"
@@ -690,7 +477,7 @@
       "required": [
         "createdbyyominame",
         "createdonbehalfbyyominame",
-        "erc_externalpartyid",
+        "erc_notificationid",
         "modifiedbyyominame",
         "modifiedonbehalfbyyominame",
         "ownerid",

@@ -1,8 +1,13 @@
 import { formatDateTime } from "./communicationLogic";
 import { FLOWS } from "./flows";
-import type { Category, CommStatus, Communication, DocRisk, DocType, License, Party, Priority, Renewal, RenewalStatus, SlaRule, SlaState } from "./types";
+import type { Category, CommStatus, Communication, DocRisk, DocType, License, Notice, NoticeResult, NoticeType, Party, Priority, Renewal, RenewalStatus, SlaRule, SlaState } from "./types";
+import { applyLicenseFormulas, DEFAULT_REMINDER_THRESHOLD } from "./licenseLogic";
+import type { Erc_notifications } from "../generated/models/Erc_notificationsModel";
 import {
-  Erc_communicationserc_category,
+  Erc_notificationserc_notificationtype,
+  Erc_notificationserc_result,
+} from "../generated/models/Erc_notificationsModel";
+import {
   Erc_communicationserc_categoryf,
   Erc_communicationserc_lifecyclestatus,
   Erc_communicationserc_priorityf,
@@ -150,8 +155,8 @@ export function slaState(row: Communication, today = todayIso()): SlaState {
 
 export function docState(row: License, today = todayIso()) {
   if (row.status === "Renewed" || row.done) return "Renewed";
-  const left = daysBetween(today, row.expiry);
-  if (left < 0) return "Expired";
+  const left = row.daysRemaining ?? daysBetween(today, row.expiry);
+  if (left < 0 || row.status === "Expired" || row.isOverdue) return "Expired";
   if (left <= 90) return "Expiring";
   return "Active";
 }
@@ -160,29 +165,87 @@ export function needsEvidence(cat: Category) {
   return cat === "Government" || cat === "Legal" || cat === "Regulatory";
 }
 
-function lookupDisplay(row: object, logical: string, formattedName?: string) {
+function asGuid(value: unknown): string | undefined {
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  const raw = value
+    .trim()
+    .replace(/[{}]/g, "")
+    .replace(/^\/\w+\(/i, "")
+    .replace(/\)$/, "");
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(raw) ? raw : undefined;
+}
+
+function lookupRef(row: object, logical: string, formattedName?: string): { id?: string; name: string } {
   const rec = row as Record<string, unknown>;
   const nested = rec[logical];
-  if (nested && typeof nested === "object" && nested !== null && "name" in nested) {
-    const name = (nested as { name?: string }).name;
-    if (name) return name;
+  let id = asGuid(rec[`_${logical}_value`]);
+  let name = "";
+
+  if (nested && typeof nested === "object" && nested !== null) {
+    const obj = nested as Record<string, unknown>;
+    const nestedName = obj.name ?? obj.Name ?? obj.businessunitidname ?? obj.erc_partyname ?? obj.erc_externalpartyname;
+    if (typeof nestedName === "string" && nestedName.trim()) name = nestedName.trim();
+    id = id
+      || asGuid(obj.businessunitid)
+      || asGuid(obj.id)
+      || asGuid(obj[`${logical}id`]);
+  } else {
+    id = id || asGuid(nested);
+    if (!id && typeof nested === "string" && nested.trim() && !asGuid(nested)) name = nested.trim();
   }
-  const odata = rec[`_${logical}_value@OData.Community.Display.V1.FormattedValue`];
-  if (typeof odata === "string" && odata.trim()) return odata;
-  if (formattedName?.trim()) return formattedName;
-  return "";
+
+  if (!name) {
+    const formattedKeys = [
+      `_${logical}_value@OData.Community.Display.V1.FormattedValue`,
+      `${logical}@OData.Community.Display.V1.FormattedValue`,
+      `_${logical}_value@odata.community.display.v1.formattedvalue`,
+    ];
+    for (const key of formattedKeys) {
+      const val = rec[key];
+      if (typeof val === "string" && val.trim()) {
+        name = val.trim();
+        break;
+      }
+    }
+  }
+  if (!name) {
+    const needle = `_${logical}_value`.toLowerCase();
+    for (const [key, val] of Object.entries(rec)) {
+      if (
+        key.toLowerCase().includes(needle)
+        && key.toLowerCase().includes("formattedvalue")
+        && typeof val === "string"
+        && val.trim()
+      ) {
+        name = val.trim();
+        break;
+      }
+    }
+  }
+  if (!name && formattedName?.trim() && !asGuid(formattedName)) name = formattedName.trim();
+  return { id, name };
 }
+
+function lookupDisplay(row: object, logical: string, formattedName?: string) {
+  return lookupRef(row, logical, formattedName).name;
+}
+
+export { lookupDisplay };
 
 export function mapParty(row: Erc_externalparties): Party {
   const crit = cleanLabel(row.erc_defaultpriorityname || row.erc_priorityname);
+  const unit = lookupRef(row, "erc_businessunit", row.erc_businessunitname);
+  const dept = lookupRef(row, "erc_department", row.erc_departmentname);
   return {
     id: row.erc_externalpartyid,
     name: row.erc_partyname || "Unnamed party",
     category: asCategory(row.erc_categoryname),
     email: row.erc_officialemail || "",
     domain: (row.erc_domain || senderDomain(row.erc_officialemail || "")).toLowerCase(),
-    bu: lookupDisplay(row, "erc_businessunit", row.erc_businessunitname) || row.owningbusinessunitname || "",
-    buId: row._erc_businessunit_value,
+    bu: unit.name,
+    buId: unit.id,
+    department: dept.name,
+    departmentId: dept.id,
     owner: row.erc_defaultownername || row.owneridname || "",
     criticality: crit === "Low" || crit === "Medium" ? crit : "High",
     status: row.erc_active === false || row.statecode === 1 ? "Inactive" : "Active",
@@ -218,33 +281,34 @@ export function mapComm(row: Erc_communications): Communication {
   const due = row.erc_duedate || "";
   const manual = asFlag(row.erc_ismanuallyescalated) || asFlag(row.erc_ismanuallyescalatedname);
   const locked = asFlag(row.erc_isescalated) || asFlag(row.erc_isescalatedname) || asFlag(row.erc_isescalatedf) || manual;
+  const partyRef = lookupRef(row, "erc_externalparty", row.erc_externalpartyname);
   const log: Communication["log"] = [
     { title: FLOWS.createCommunication.name, meta: `${formatDateTime(createdOn)} — native Emails table` },
   ];
-  if (row.erc_externalpartyname) log.push({ title: "Sender matched to External Party Master", meta: row.erc_externalpartyname });
+  if (partyRef.name) log.push({ title: "Sender matched to External Party Master", meta: partyRef.name });
   if (row.erc_slarulename) log.push({ title: "SLA rule applied", meta: `${row.erc_slarulename} · due ${formatDateTime(due)}` });
   if (row.erc_responsesummary) log.push({ title: "Response recorded", meta: row.erc_responsesummary });
   if (row.erc_closurecomment) log.push({ title: "Closure comment captured by flow", meta: row.erc_closurecomment });
-  const hasParty = !!row._erc_externalparty_value;
   const formulaCat = asCategoryOptional(row.erc_categoryfname || Erc_communicationserc_categoryf[row.erc_categoryf as 1]);
-  const writtenCat = asCategoryOptional(row.erc_categoryname || Erc_communicationserc_category[row.erc_category as 1]);
+  const formulaPri = asPriority(row.erc_priorityfname || Erc_communicationserc_priorityf[row.erc_priorityf as 1]);
   const mapped: Communication = {
     id: row.erc_id || displayCommId(row.erc_communicationid, row.createdon),
     recordId: row.erc_communicationid,
-    party: hasParty ? (row.erc_externalpartyname || "") : "",
-    partyId: row._erc_externalparty_value,
+    party: partyRef.name,
+    partyId: partyRef.id,
     slaId: row._erc_slarule_value,
     slaName: row.erc_slarulename,
-    cat: hasParty ? (formulaCat || writtenCat || "Corporate") : (writtenCat || formulaCat || "Corporate"),
-    categoryAssigned: hasParty ? !!formulaCat : !!writtenCat,
+    cat: formulaCat || "Corporate",
+    categoryAssigned: !!formulaCat,
     subj: row.erc_emailsubject || row.erc_subject || "(no subject)",
     owner: row.owneridname || "",
     sup: row.erc_supervisorname || "",
-    pri: hasParty ? asPriority(row.erc_priorityfname || Erc_communicationserc_priorityf[row.erc_priorityf as 1]) : "None",
+    pri: formulaPri,
     rec: recDate,
     due,
     status,
-    bu: row.erc_buf || "",
+    bu: (row.erc_buf || "").trim(),
+    department: lookupDisplay(row, "erc_department", row.erc_departmentname),
     resp: row.erc_responsesummary,
     respAction: row.erc_responsesummary,
     closed: row.erc_closuredatetime || (status === "Closed" ? row.modifiedon : undefined),
@@ -271,25 +335,36 @@ export function mapDoc(row: Erc_licenseandcontracts): License {
   const typeLabel = cleanLabel(row.erc_documenttypename || Erc_licenseandcontractserc_documenttype[row.erc_documenttype]);
   const riskLabel = cleanLabel(row.erc_risklevelname || Erc_licenseandcontractserc_risklevel[row.erc_risklevel]);
   const renewal = cleanLabel(row.erc_renewalstatusname || Erc_licenseandcontractserc_renewalstatus[row.erc_renewalstatus]);
-  return {
+  const unit = lookupRef(row, "erc_businessunit", row.erc_businessunitname);
+  const partyRef = lookupRef(row, "erc_externalparty", row.erc_externalpartyname);
+  const days = row.erc_daystoexpiry ?? row.erc_daysremaining;
+  return applyLicenseFormulas({
     id: row.erc_documentnumber || displayDocId(row.erc_licenseandcontractid, row.createdon),
     recordId: row.erc_licenseandcontractid,
     type: typeLabel === "Contract" || typeLabel === "Permit" ? typeLabel : "License",
     name: row.erc_licenseandcontract1 || "Untitled document",
-    party: row.erc_externalpartyname || row.erc_issuingauthorityname || "",
-    partyId: row._erc_externalparty_value,
+    party: partyRef.name || row.erc_issuingauthorityname || "",
+    partyId: partyRef.id,
     auth: row.erc_issuingauthorityname || "",
     issue: dateOnly(row.erc_issuedate),
     expiry: dateOnly(row.erc_expirydate),
     risk: (riskLabel === "Critical" || riskLabel === "High" || riskLabel === "Medium" || riskLabel === "Low" ? riskLabel : "Medium") as DocRisk,
     owner: row.owneridname || "",
-    bu: row.erc_businessunitname || "",
-    buId: row._erc_businessunit_value,
+    bu: unit.name,
+    buId: unit.id,
+    department: lookupDisplay(row, "erc_department", row.erc_departmentname),
     status: renewal === "Renewed" ? "Renewed" : renewal === "Expired" ? "Expired" : undefined,
     notified: row.erc_lastnotified,
     done: dateOnly(row.erc_renewalcompleted),
-    daysRemaining: row.erc_daysremaining,
-  };
+    daysRemaining: typeof days === "number" ? Math.round(days) : undefined,
+    reminderThreshold: row.erc_reminderthreshold || DEFAULT_REMINDER_THRESHOLD,
+    reminderSent: asFlag(row.erc_remindersent) || asFlag(row.erc_remindersentname),
+    isEscalated: asFlag(row.erc_isescalated) || asFlag(row.erc_isescalatedname),
+    escalatedBy: row.erc_escalatedbyname,
+    escalationReason: row.erc_escalationreason,
+    currentRenewalId: row._erc_currentrenewal_value,
+    currentRenewalName: row.erc_currentrenewalname,
+  });
 }
 
 export function docTypeChoice(type: DocType) {
@@ -339,6 +414,59 @@ export function mapRenewal(row: Erc_renewals): Renewal {
     reminderDate: row.erc_reminderdate,
     reminderCount: row.erc_remindercount,
     escalation: esc === "L1" || esc === "L2" ? esc : "Not Escalated",
+    ownerId: row._erc_owner_value,
+  };
+}
+
+export function renewalTypeChoice(type: DocType) {
+  return type === "License" ? 1 : type === "Contract" ? 2 : 3;
+}
+
+export function renewalTaskStatusChoice(status: RenewalStatus) {
+  const map: Record<RenewalStatus, 1 | 2 | 3 | 4 | 5> = {
+    Open: 1,
+    "In progress": 2,
+    Completed: 3,
+    Overdue: 4,
+    Cancelled: 5,
+  };
+  return map[status];
+}
+
+export function renewalRiskChoice(risk: DocRisk) {
+  return risk === "Low" ? 1 : risk === "Medium" ? 2 : risk === "High" ? 3 : 4;
+}
+
+export function escalationChoice(status: Renewal["escalation"]) {
+  return status === "L1" ? 2 : status === "L2" ? 3 : 1;
+}
+
+export function noticeTypeChoice(type: NoticeType) {
+  return type === "Reminder" ? 1 : type === "Expiry" ? 2 : 3;
+}
+
+export function noticeResultChoice(result: NoticeResult) {
+  return result === "Failed" ? 2 : 1;
+}
+
+export function mapNotice(row: Erc_notifications): Notice {
+  const typeLabel = cleanLabel(row.erc_notificationtypename || Erc_notificationserc_notificationtype[row.erc_notificationtype as 1]);
+  const resultLabel = cleanLabel(row.erc_resultname || Erc_notificationserc_result[row.erc_result as 1]);
+  const type: NoticeType = typeLabel === "Expiry" || typeLabel === "Escalation" ? typeLabel : "Reminder";
+  return {
+    id: displayDocId(row.erc_notificationid, row.createdon).replace("DOC", "NTF"),
+    recordId: row.erc_notificationid,
+    title: row.erc_notificationtitle || "Notification",
+    type,
+    documentId: row._erc_licenseandcontract_value,
+    documentName: row.erc_licenseandcontractname,
+    renewalId: row._erc_renewal_value,
+    renewalName: row.erc_renewalname,
+    sentOn: row.erc_senton || row.createdon,
+    result: resultLabel.toLowerCase().startsWith("fail") ? "Failed" : "Sent",
+    message: row.erc_notificationmessage || row.erc_message,
+    isRead: asFlag(row.erc_isread) || asFlag(row.erc_isreadname),
+    owner: row.owneridname || "",
   };
 }
 

@@ -203,7 +203,7 @@ export function ResolveUnmatchedForm({
         <div className="note">
           {mode === "party"
             ? "The communication is bound to that party. Category, Priority, and Business Unit then follow the party formula columns."
-            : "No External Party is set. Priority stays None. Category is written on the communication (erc_category), not the formula column."}
+            : "Category, Priority, and Business Unit come from erc_CategoryF, erc_PriorityF, and erc_BUF. Without a party, saving category writes erc_category so CategoryF can calculate."}
         </div>
         <div className="df" style={{ margin: "16px -20px -20px" }}>
           <button className="btn btn-primary" type="submit" disabled={busy}>
