@@ -183,10 +183,14 @@ function lookupRef(row: object, logical: string, formattedName?: string): { id?:
 
   if (nested && typeof nested === "object" && nested !== null) {
     const obj = nested as Record<string, unknown>;
-    const nestedName = obj.name ?? obj.Name ?? obj.businessunitidname ?? obj.erc_partyname ?? obj.erc_externalpartyname;
+    const nestedName = obj.fullname ?? obj.FullName ?? obj.name ?? obj.Name
+      ?? obj.owneridname ?? obj.businessunitidname ?? obj.erc_partyname ?? obj.erc_externalpartyname;
     if (typeof nestedName === "string" && nestedName.trim()) name = nestedName.trim();
     id = id
       || asGuid(obj.businessunitid)
+      || asGuid(obj.systemuserid)
+      || asGuid(obj.teamid)
+      || asGuid(obj.ownerid)
       || asGuid(obj.id)
       || asGuid(obj[`${logical}id`]);
   } else {
@@ -230,6 +234,56 @@ function lookupDisplay(row: object, logical: string, formattedName?: string) {
   return lookupRef(row, logical, formattedName).name;
 }
 
+function asDisplayName(value: unknown): string {
+  if (typeof value === "string") {
+    const text = value.trim();
+    return text && !asGuid(text) ? text : "";
+  }
+  if (value && typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    return asDisplayName(obj.fullname ?? obj.FullName ?? obj.name ?? obj.Name ?? obj.owneridname);
+  }
+  return "";
+}
+
+function formattedOwnerName(row: object) {
+  const rec = row as Record<string, unknown>;
+  for (const [key, val] of Object.entries(rec)) {
+    const k = key.toLowerCase();
+    if (
+      (k.includes("ownerid") || k.includes("owninguser") || k.includes("owningteam"))
+      && k.includes("formattedvalue")
+    ) {
+      const name = asDisplayName(val);
+      if (name) return name;
+    }
+  }
+  return "";
+}
+
+/** Dataverse Owner is OwnerType: name often arrives as formatted OData, nested user, or GUID-only. */
+export function recordOwner(row: object, formattedName?: string): { id?: string; name: string } {
+  const rec = row as Record<string, unknown>;
+  const owner = lookupRef(row, "ownerid", formattedName);
+  const user = lookupRef(row, "owninguser");
+  const team = lookupRef(row, "owningteam");
+  const name = owner.name
+    || user.name
+    || team.name
+    || asDisplayName(rec.owneridname)
+    || asDisplayName(rec.owningusername)
+    || asDisplayName(rec.owningteamname)
+    || formattedOwnerName(row)
+    || asDisplayName(rec.ownerid);
+  const id = owner.id
+    || user.id
+    || team.id
+    || asGuid(rec.ownerid)
+    || asGuid(rec._owninguser_value)
+    || asGuid(rec._owningteam_value);
+  return { id, name };
+}
+
 export { lookupDisplay };
 
 export function mapParty(row: Erc_externalparties): Party {
@@ -246,7 +300,7 @@ export function mapParty(row: Erc_externalparties): Party {
     buId: unit.id,
     department: dept.name,
     departmentId: dept.id,
-    owner: row.erc_defaultownername || row.owneridname || "",
+    owner: lookupDisplay(row, "erc_defaultowner", row.erc_defaultownername) || recordOwner(row, row.owneridname).name,
     criticality: crit === "Low" || crit === "Medium" ? crit : "High",
     status: row.erc_active === false || row.statecode === 1 ? "Inactive" : "Active",
   };
@@ -291,6 +345,7 @@ export function mapComm(row: Erc_communications): Communication {
   if (row.erc_closurecomment) log.push({ title: "Closure comment captured by flow", meta: row.erc_closurecomment });
   const formulaCat = asCategoryOptional(row.erc_categoryfname || Erc_communicationserc_categoryf[row.erc_categoryf as 1]);
   const formulaPri = asPriority(row.erc_priorityfname || Erc_communicationserc_priorityf[row.erc_priorityf as 1]);
+  const owner = recordOwner(row, row.owneridname);
   const mapped: Communication = {
     id: row.erc_id || displayCommId(row.erc_communicationid, row.createdon),
     recordId: row.erc_communicationid,
@@ -301,7 +356,8 @@ export function mapComm(row: Erc_communications): Communication {
     cat: formulaCat || "Corporate",
     categoryAssigned: !!formulaCat,
     subj: row.erc_emailsubject || row.erc_subject || "(no subject)",
-    owner: row.owneridname || "",
+    owner: owner.name,
+    ownerId: owner.id,
     sup: row.erc_supervisorname || "",
     pri: formulaPri,
     rec: recDate,

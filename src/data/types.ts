@@ -81,6 +81,7 @@ export type Communication = {
   cat: Category;
   subj: string;
   owner: string;
+  ownerId?: string;
   sup: string;
   pri: Priority;
   rec: string;

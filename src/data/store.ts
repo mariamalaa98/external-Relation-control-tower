@@ -78,6 +78,7 @@ import { Erc_notificationsService } from "../generated/services/Erc_notification
 import { Erc_renewalsService } from "../generated/services/Erc_renewalsService";
 import { Erc_sla2sService } from "../generated/services/Erc_sla2sService";
 import { SystemusersService } from "../generated/services/SystemusersService";
+import { TeamsService } from "../generated/services/TeamsService";
 import type { Erc_communicationsBase } from "../generated/models/Erc_communicationsModel";
 import type { Erc_externalpartiesBase } from "../generated/models/Erc_externalpartiesModel";
 import type { Erc_licenseandcontractsBase } from "../generated/models/Erc_licenseandcontractsModel";
@@ -195,6 +196,43 @@ function sameId(a?: string, b?: string) {
 
 export { sameId };
 
+const ownerNameCache = new Map<string, string>();
+
+function ownerCacheKey(id: string) {
+  return id.replace(/[{}]/g, "").toLowerCase();
+}
+
+async function resolveMissingOwners(rows: Communication[]): Promise<Communication[]> {
+  const missing = rows.filter((r) => !String(r.owner || "").trim() && r.ownerId);
+  if (!missing.length) return rows;
+  const unresolved = [...new Set(missing.map((r) => r.ownerId!).filter((id) => !ownerNameCache.has(ownerCacheKey(id))))];
+  const chunkSize = 12;
+  for (let i = 0; i < unresolved.length; i += chunkSize) {
+    const chunk = unresolved.slice(i, i + chunkSize);
+    try {
+      const filter = chunk.map((id) => `systemuserid eq ${ownerCacheKey(id)}`).join(" or ");
+      const users = await SystemusersService.getAll({ top: chunk.length, filter, select: ["systemuserid", "fullname"] });
+      for (const user of users.data || []) {
+        if (user.systemuserid && user.fullname) ownerNameCache.set(ownerCacheKey(user.systemuserid), user.fullname);
+      }
+    } catch { /* owner may be a team */ }
+    const still = chunk.filter((id) => !ownerNameCache.has(ownerCacheKey(id)));
+    if (!still.length) continue;
+    try {
+      const filter = still.map((id) => `teamid eq ${ownerCacheKey(id)}`).join(" or ");
+      const teams = await TeamsService.getAll({ top: still.length, filter, select: ["teamid", "name"] });
+      for (const team of teams.data || []) {
+        if (team.teamid && team.name) ownerNameCache.set(ownerCacheKey(team.teamid), team.name);
+      }
+    } catch { /* leave blank if lookup is denied */ }
+  }
+  return rows.map((row) => {
+    if (String(row.owner || "").trim() || !row.ownerId) return row;
+    const name = ownerNameCache.get(ownerCacheKey(row.ownerId));
+    return name ? { ...row, owner: name } : row;
+  });
+}
+
 export function matchesSearch(q: string, ...fields: unknown[]) {
   const tokens = q.toLowerCase().trim().split(/\s+/).filter(Boolean);
   if (!tokens.length) return true;
@@ -298,33 +336,37 @@ function partyNameEquals(a?: string, b?: string) {
 }
 
 function fillPartyDisplay(row: Communication, parties: Party[] = store.parties): Communication {
+  const withOwner = (next: Communication, party?: Party) => {
+    if (String(next.owner || "").trim() || !party?.owner) return next;
+    return { ...next, owner: party.owner };
+  };
   if (row.partyId) {
     const match = parties.find((p) => sameId(p.id, row.partyId) || partyNameEquals(p.name, row.party));
     if (match) {
-      if (store.source === "dataverse") return { ...row, party: match.name, partyId: match.id };
-      return {
+      if (store.source === "dataverse") return withOwner({ ...row, party: match.name, partyId: match.id }, match);
+      return withOwner({
         ...row,
         party: match.name,
         partyId: match.id,
         cat: match.category || row.cat,
         bu: match.bu || row.bu,
         categoryAssigned: true,
-      };
+      }, match);
     }
     return { ...row, party: row.party || "Linked party" };
   }
   if (row.party) {
     const match = parties.find((p) => partyNameEquals(p.name, row.party));
     if (match) {
-      if (store.source === "dataverse") return { ...row, partyId: match.id, party: match.name };
-      return {
+      if (store.source === "dataverse") return withOwner({ ...row, partyId: match.id, party: match.name }, match);
+      return withOwner({
         ...row,
         partyId: match.id,
         party: match.name,
         cat: match.category || row.cat,
         bu: match.bu || row.bu,
         categoryAssigned: true,
-      };
+      }, match);
     }
     return row;
   }
@@ -334,7 +376,7 @@ function fillPartyDisplay(row: Communication, parties: Party[] = store.parties):
 async function commFromDataverse(id: string, fallback: Communication): Promise<Communication> {
   try {
     const got = await Erc_communicationsService.get(id);
-    if (got.data) return fillPartyDisplay(mapComm(got.data));
+    if (got.data) return fillPartyDisplay((await resolveMissingOwners([mapComm(got.data)]))[0]);
   } catch { /* create response may omit formula columns */ }
   return fillPartyDisplay({ ...fallback, recordId: id, overdueFromColumn: true });
 }
@@ -346,7 +388,7 @@ export async function loadCommunicationById(id: string): Promise<Communication |
   try {
     const got = await Erc_communicationsService.get(id.replace(/[{}]/g, ""));
     if (!got.data) return undefined;
-    const mapped = fillPartyDisplay(applyUnitName(mapComm(got.data), store.businessUnits));
+    const mapped = fillPartyDisplay((await resolveMissingOwners([applyUnitName(mapComm(got.data), store.businessUnits)]))[0]);
     if (!findComm(mapped.recordId || mapped.id)) {
       store = { ...store, comms: [mapped, ...store.comms] };
       emit();
@@ -711,9 +753,9 @@ export async function hydrate(useDataverse: boolean) {
     const mappedSla = (slas.data || []).flatMap((row) => {
       try { return [mapSla(row)]; } catch { return []; }
     });
-    const mappedComms = (comms.data || []).flatMap((row) => {
+    const mappedComms = await resolveMissingOwners((comms.data || []).flatMap((row) => {
       try { return [applyUnitName(mapComm(row), businessUnits)]; } catch { return []; }
-    });
+    }));
     const mappedDocs = (docs.data || []).flatMap((row) => {
       try { return [applyUnitName(mapDoc(row), businessUnits)]; } catch { return []; }
     });
@@ -1158,7 +1200,7 @@ export async function tickFormulas(now = new Date()) {
   if (store.source === "dataverse") {
     try {
       const comms = await Erc_communicationsService.getAll({ top: 250, orderBy: ["createdon desc"] });
-      store = { ...store, comms: (comms.data || []).map(mapComm) };
+      store = { ...store, comms: await resolveMissingOwners((comms.data || []).map(mapComm).map((row) => fillPartyDisplay(row))) };
       emit();
     } catch { /* keep the last loaded formula values */ }
     return;

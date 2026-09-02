@@ -1,23 +1,18 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import {
-  COMM_STATUSES,
   CATS,
   type Communication,
   type EmailAttachment,
   type ThreadEmail,
 } from "../data/types";
 import {
-  ME,
   canManualEscalate,
   commLocked,
-  communicationDeepLink,
-  copyText,
   formatDateTime,
   loadCommThread,
   loadEmailAttachmentFile,
   overdueLabel,
   saveComm,
-  sameId,
   threadEmails,
   useStore,
   yesNo,
@@ -35,7 +30,6 @@ export function CommRecordForm({
   row,
   busy,
   onClose,
-  onRespond,
   onCloseRec,
   onReopen,
   onEscalate,
@@ -44,7 +38,6 @@ export function CommRecordForm({
   row: Communication;
   busy: boolean;
   onClose: () => void;
-  onRespond: () => void;
   onCloseRec: () => void;
   onReopen: () => void;
   onEscalate: () => void;
@@ -56,41 +49,34 @@ export function CommRecordForm({
   const [saving, setBusy] = useState(false);
   const [tab, setTab] = useState<"general" | "email">("general");
   const [threadBusy, setThreadBusy] = useState(false);
-  const [copiedLink, setCopiedLink] = useState(false);
   const hasParty = !!row.partyId;
   const partyLabel = row.party || (hasParty ? "Linked party" : "None");
-  const deepLink = communicationDeepLink(row.recordId);
+  const partyFromTable = hasParty;
+  const catFromTable = hasParty || row.categoryAssigned;
+  const subjectFromTable = !!(row.emailSubject || row.subj);
+  const descFromTable = !!row.description?.trim();
+  const slaFromTable = !!row.slaId;
 
   useEffect(() => {
     setThreadBusy(true);
     void loadCommThread(row).finally(() => setThreadBusy(false));
   }, [row.id, row.recordId]);
 
-  async function copyDeepLink() {
-    const ok = await copyText(deepLink);
-    setCopiedLink(ok);
-    if (ok) onSaved("Deeplink copied");
-    window.setTimeout(() => setCopiedLink(false), 1600);
-  }
-
   async function save(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const f = new FormData(e.currentTarget);
-    const partyId = String(f.get("partyId") || "");
+    const partyId = partyFromTable ? (row.partyId || "") : String(f.get("partyId") || "");
     const party = db.parties.find((p) => p.id === partyId);
+    const slaId = slaFromTable ? (row.slaId || "") : String(f.get("sla") || row.slaId || "");
     setBusy(true);
     try {
       await saveComm(row.id, {
-        type: String(f.get("type")) as Communication["type"],
-        description: String(f.get("description") || ""),
-        emailSubject: String(f.get("emailSubject") || row.emailSubject || row.subj),
-        subj: String(f.get("emailSubject") || row.subj),
+        description: descFromTable ? (row.description || "") : String(f.get("description") || ""),
         partyId,
-        party: party?.name || "",
-        status: String(f.get("status") || row.status) as Communication["status"],
-        slaId: String(f.get("sla") || row.slaId || ""),
-        slaName: db.sla.find((s) => s.id === String(f.get("sla")))?.name || row.slaName,
-        cat: partyId ? row.cat : (String(f.get("cat") || row.cat) as Communication["cat"]),
+        party: partyFromTable ? (row.party || "") : (party?.name || ""),
+        slaId,
+        slaName: slaFromTable ? row.slaName : (db.sla.find((s) => s.id === slaId)?.name || row.slaName),
+        cat: partyId || catFromTable ? row.cat : (String(f.get("cat") || row.cat) as Communication["cat"]),
       });
       onSaved("Communication saved");
     } finally {
@@ -99,7 +85,7 @@ export function CommRecordForm({
   }
 
   async function chooseParty(partyId: string) {
-    if (locked || saving) return;
+    if (locked || saving || partyFromTable) return;
     const party = db.parties.find((p) => p.id === partyId);
     setBusy(true);
     try {
@@ -114,7 +100,7 @@ export function CommRecordForm({
   }
 
   async function chooseCategory(cat: string) {
-    if (locked || saving || hasParty) return;
+    if (locked || saving || catFromTable) return;
     setBusy(true);
     try {
       await saveComm(row.id, {
@@ -142,22 +128,15 @@ export function CommRecordForm({
         </>
       ) : (
         <>
+          <button className="btn btn-primary" type="submit" form="comm-form" disabled={saving}>Save</button>
           <button className="btn btn-outline" type="button" disabled={busy || !canManualEscalate(row)} onClick={onEscalate}>
             {canManualEscalate(row) ? "Escalate" : "Already escalated"}
           </button>
-          <button className="btn btn-primary" type="button" disabled={busy} onClick={onCloseRec}>Close</button>
+          <button className="btn btn-outline" type="button" disabled={busy} onClick={onCloseRec}>Close</button>
           <button className="btn btn-ghost" type="button" onClick={onClose}>Close panel</button>
         </>
       )}
     >
-      <div className="cmdbar">
-        <button className="cmd" type="submit" form="comm-form" disabled={locked || saving}>Save</button>
-        <button className="cmd" type="button" disabled={locked || busy || !canManualEscalate(row)} onClick={onEscalate}>
-          {canManualEscalate(row) ? "Escalate" : "Already escalated"}
-        </button>
-        <button className="cmd" type="button" disabled={locked || busy} onClick={onCloseRec}>Close</button>
-        <button className="cmd" type="button" disabled={locked || busy} onClick={onRespond}>Respond</button>
-      </div>
       <div className="summary-chips comm-hero">
             {row.categoryAssigned ? catBadge(row.cat) : <span className="badge b-gray">Unassigned</span>}
         {priBadge(row.pri)}
@@ -178,61 +157,52 @@ export function CommRecordForm({
           <form id="comm-form" className="mdf" onSubmit={save} key={`${row.id}-${row.partyId || ""}-${row.party}-${row.cat}-${row.categoryAssigned}-${row.isEscalated}-${row.status}-${row.closed || ""}`}>
             <div className="mdf-sec">Identity</div>
             <Field label="Owner">
-              <div className="lookup">{row.owner || ME} <span className="avail">Available</span></div>
+              <div className="lookup">{row.owner || "—"}</div>
             </Field>
             <Field label="External Party">
-              <select
-                name="partyId"
-                defaultValue={db.parties.find((p) => sameId(p.id, row.partyId))?.id || row.partyId || ""}
-                disabled={locked || saving}
-                onChange={(e) => void chooseParty(e.target.value)}
-              >
-                <option value="">None — not related to an external party</option>
-                {db.parties.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                {row.partyId && !db.parties.some((p) => sameId(p.id, row.partyId)) ? (
-                  <option value={row.partyId}>{row.party || "Linked party"}</option>
-                ) : null}
-              </select>
+              {partyFromTable ? (
+                <div className="readonly-val">{partyLabel}</div>
+              ) : (
+                <select
+                  name="partyId"
+                  defaultValue=""
+                  disabled={locked || saving}
+                  onChange={(e) => void chooseParty(e.target.value)}
+                >
+                  <option value="">None — not related to an external party</option>
+                  {db.parties.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+              )}
             </Field>
             <Field label="Communication Type">
-              <select name="type" defaultValue={row.type} disabled={locked}>
-                <option>Inbound</option>
-                <option>Outbound</option>
-                <option>Internal follow up</option>
-              </select>
+              <div className="readonly-val">{row.type || "—"}</div>
             </Field>
             <Field label="Lifecycle Status">
-              <select name="status" defaultValue={row.status} disabled={locked}>
-                {COMM_STATUSES.map((s) => <option key={s}>{s}</option>)}
-              </select>
+              <div className="readonly-val">{statusBadge(row.status)}</div>
             </Field>
             <Field label="Email Subject" wide>
-              <input name="emailSubject" defaultValue={row.emailSubject || row.subj} disabled={locked} />
-            </Field>
-            <Field label="Record GUID" wide>
-              <input readOnly value={row.recordId || ""} />
-            </Field>
-            <Field label="Deeplink" wide>
-              <div className="deeplink-row">
-                <input readOnly value={deepLink} />
-                <button className="btn btn-outline btn-mini" type="button" onClick={() => void copyDeepLink()}>
-                  {copiedLink ? "Copied" : "Copy"}
-                </button>
-              </div>
-              <div className="hint">Power Automate: put this URL in the email. Parameter <b>comm</b> must be <b>erc_communicationid</b> (the GUID), not CommID. Do not add tenantId.</div>
+              {subjectFromTable ? (
+                <input readOnly value={row.emailSubject || row.subj} />
+              ) : (
+                <input name="emailSubject" defaultValue="" disabled={locked} />
+              )}
             </Field>
             <Field label="Description" wide>
-              <textarea name="description" rows={3} defaultValue={row.description || ""} disabled={locked} />
+              {descFromTable ? (
+                <textarea readOnly rows={3} value={row.description || ""} />
+              ) : (
+                <textarea name="description" rows={3} defaultValue="" disabled={locked} />
+              )}
             </Field>
 
             <div className="mdf-sec">Classification</div>
             <Field label="Category">
-              {hasParty ? (
+              {catFromTable ? (
                 <div className="readonly-val">{row.cat || "—"}</div>
               ) : (
                 <select
                   name="cat"
-                  defaultValue={row.categoryAssigned ? row.cat : ""}
+                  defaultValue=""
                   disabled={locked || saving}
                   onChange={(e) => void chooseCategory(e.target.value)}
                 >
@@ -248,12 +218,16 @@ export function CommRecordForm({
               <div className="readonly-val">{row.bu || "—"}</div>
             </Field>
             <Field label="SLA">
-              <select name="sla" defaultValue={row.slaId || ""} disabled={locked}>
-                <option value="">—</option>
-                {db.sla.filter((s) => s.active).map((s) => (
-                  <option key={s.id} value={s.id}>{s.name}</option>
-                ))}
-              </select>
+              {slaFromTable ? (
+                <div className="readonly-val">{row.slaName || "—"}</div>
+              ) : (
+                <select name="sla" defaultValue="" disabled={locked}>
+                  <option value="">—</option>
+                  {db.sla.filter((s) => s.active).map((s) => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </select>
+              )}
             </Field>
             <Field label="Due Date">
               <input readOnly value={formatDateTime(row.due)} />
@@ -573,7 +547,7 @@ export function EscalationCenter({
               <tr key={r.recordId || r.id} onClick={() => onOpen(r)}>
                 <td><span className="link">{r.id}</span></td>
                 <td>{r.subj}</td>
-                <td>{r.owner}</td>
+                <td>{r.owner || "—"}</td>
                 <td className="mono">{formatDateTime(r.due)}</td>
                 <td>{flagBadge(r.isOverdue, "Overdue", "On Track")}</td>
                 <td>{flagBadge(r.isEscalated, "Escalated", "Not Escalated")}</td>

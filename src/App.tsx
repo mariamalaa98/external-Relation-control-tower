@@ -1,4 +1,4 @@
-﻿import { Component, useEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent, type ReactNode } from "react";
+﻿import { Component, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import {
   BUS,
   CATS,
@@ -59,11 +59,8 @@ import {
   partyMatchesOrg,
   commMatchesOrg,
   docMatchesOrg,
-  communicationDeepLink,
-  copyText,
   loadCommunicationById,
   parseCommunicationDeepLink,
-  cleanRecordGuid,
 } from "./data/store";
 import { DataTable, FilterField, Kpi, Overlay, OrgFilterFields, PageHead, catBadge, flagBadge, priBadge, statusBadge } from "./ui/widgets";
 import { CloseCommForm, CommRecordForm, EscalationCenter } from "./ui/communication";
@@ -605,7 +602,6 @@ export default function App() {
             row={liveDrawer}
             busy={busy}
             onClose={() => setDrawer(null)}
-            onRespond={() => setModal({ kind: "respond", comm: liveDrawer })}
             onCloseRec={() => setModal({ kind: "close", comm: liveDrawer })}
             onReopen={() => setModal({ kind: "reopen", comm: liveDrawer })}
             onEscalate={() => {
@@ -644,18 +640,10 @@ function CommTable({
   const [cat, setCat] = useState("All");
   const [status, setStatus] = useState("All");
   const [sla, setSla] = useState("All");
-  const [copiedId, setCopiedId] = useState("");
   const filtered = useMemo(() => rows.filter((r) => {
     const hit = `${r.id} ${r.party} ${r.subj} ${r.owner} ${r.caseRef || ""}`.toLowerCase().includes(q.toLowerCase());
     return hit && (cat === "All" || r.cat === cat) && (status === "All" || r.status === status) && (sla === "All" || slaState(r) === sla);
   }), [rows, q, cat, status, sla]);
-  async function copyRowLink(row: Communication, e: MouseEvent) {
-    e.stopPropagation();
-    const link = communicationDeepLink(row.recordId);
-    const ok = await copyText(link);
-    setCopiedId(ok ? row.recordId || row.id : "");
-    window.setTimeout(() => setCopiedId(""), 1600);
-  }
   return (
     <>
       <div className="filters">
@@ -680,8 +668,8 @@ function CommTable({
       </div>
       <DataTable
         cols={legal
-          ? ["CommID", "Case Reference", "External Party", "Subject", "Owner", "Priority", "Received", "Due", "Status", "Overdue", "Escalated", "Deeplink"]
-          : ["CommID", "External Party", "Category", "Subject", "Owner", "Priority", "Due", "Status", "Overdue", "Escalated", "Deeplink"]}
+          ? ["CommID", "Case Reference", "External Party", "Subject", "Owner", "Priority", "Received", "Due", "Status", "Overdue", "Escalated"]
+          : ["CommID", "External Party", "Category", "Subject", "Owner", "Priority", "Due", "Status", "Overdue", "Escalated"]}
         rows={filtered.map((r) => ({
           key: r.recordId || r.id,
           legal: r.cat === "Legal",
@@ -692,35 +680,25 @@ function CommTable({
                 r.caseRef || "—",
                 r.party || (r.partyId ? "Linked party" : "—"),
                 r.subj,
-                r.owner,
+                r.owner || "—",
                 priBadge(r.pri),
                 <span className="mono" key="rec">{r.rec}</span>,
                 <span className="mono" key="due">{formatDateTime(r.due)}</span>,
                 <>{statusBadge(r.status)}{commLocked(r) ? " 🔒" : ""}</>,
                 flagBadge(r.isOverdue, "Overdue", "On Track"),
                 flagBadge(r.isEscalated, "Escalated", "Not Escalated"),
-                cleanRecordGuid(r.recordId) ? (
-                  <button key="link" className="btn btn-outline btn-mini" type="button" onClick={(e) => void copyRowLink(r, e)}>
-                    {copiedId === (r.recordId || r.id) ? "Copied" : "Copy link"}
-                  </button>
-                ) : "—",
               ]
             : [
                 <span className="link" key="id">{r.id}</span>,
                 r.party || (r.partyId ? "Linked party" : "—"),
                 r.categoryAssigned ? catBadge(r.cat) : "—",
                 r.subj,
-                r.owner,
+                r.owner || "—",
                 priBadge(r.pri),
                 <span className="mono" key="due">{formatDateTime(r.due)}</span>,
                 <>{statusBadge(r.status)}{commLocked(r) ? " 🔒" : ""}</>,
                 flagBadge(r.isOverdue, "Overdue", "On Track"),
                 flagBadge(r.isEscalated, "Escalated", "Not Escalated"),
-                cleanRecordGuid(r.recordId) ? (
-                  <button key="link" className="btn btn-outline btn-mini" type="button" onClick={(e) => void copyRowLink(r, e)}>
-                    {copiedId === (r.recordId || r.id) ? "Copied" : "Copy link"}
-                  </button>
-                ) : "—",
               ],
         }))}
       />

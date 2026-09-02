@@ -291,7 +291,7 @@ button.toptab{width:auto}
 .mdf-field .req{color:#a4262c;font-weight:700}
 .mdf-field input,.mdf-field select,.mdf-field textarea{width:100%;min-width:0;border:1px solid #8a8886;border-radius:2px;
   padding:6px 8px;font:inherit;font-size:13px;background:#fff}
-.mdf-field input[readonly],.mdf-field textarea[readonly]{background:#f3f2f1;color:#605e5c}
+.mdf-field input[readonly],.mdf-field textarea[readonly],.mdf-field select:disabled,.mdf-field input:disabled,.mdf-field textarea:disabled{background:#f3f2f1;color:#605e5c}
 .mdf-field textarea{min-height:52px;resize:vertical}
 .mdf-field .hint{font-size:11px;color:var(--muted);margin-top:4px}
 .deeplink-row{display:flex;gap:8px;align-items:center}
