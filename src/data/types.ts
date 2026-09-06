@@ -231,6 +231,7 @@ export type Store = {
   source: DataSource;
   ready: boolean;
   error?: string;
+  warnings?: string[];
   sla: SlaRule[];
   parties: Party[];
   comms: Communication[];

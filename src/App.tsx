@@ -49,11 +49,6 @@ import {
   unreadNotices,
   useStore,
   DEFAULT_REMINDER_THRESHOLD,
-  linkCommToParty,
-  assignCommCategory,
-  resolveUnmatchedEmail,
-  unmatchedComms,
-  unmatchedIntake,
   matchesSearch,
   partyOrgOptions,
   partyMatchesOrg,
@@ -65,7 +60,6 @@ import {
 import { DataTable, FilterField, Kpi, Overlay, OrgFilterFields, PageHead, catBadge, flagBadge, priBadge, statusBadge } from "./ui/widgets";
 import { CloseCommForm, CommRecordForm, EscalationCenter } from "./ui/communication";
 import { LicenseEscalationPanel, NotificationCenter, RenewalTaskTable } from "./ui/license";
-import { ResolveUnmatchedForm, UnmatchedSendersPage } from "./ui/unmatched";
 
 const NAV = [
   { area: "ops", group: "COMMAND CENTER", items: [
@@ -74,7 +68,6 @@ const NAV = [
   ]},
   { area: "ops", group: "COMMUNICATIONS", items: [
     { id: "intake", ico: "✉", text: "Central Mailbox" },
-    { id: "unmatched", ico: "?", text: "Unmatched Senders" },
     { id: "tracker", ico: "☰", text: "Communication Tracker" },
     { id: "legal", ico: "⚖", text: "Legal Cases Notification" },
   ]},
@@ -112,6 +105,43 @@ type ScreenId = (typeof NAV)[number]["items"][number]["id"];
 type AreaId = (typeof AREAS)[number]["id"];
 const LATER: ScreenId[] = ["archive", "reports", "auditComm", "auditNotif"];
 
+function dashboardMissing(opts: {
+  live: boolean;
+  ready: boolean;
+  error?: string;
+  warnings?: string[];
+  comms: Communication[];
+  docs: License[];
+  parties: { email?: string; domain?: string }[];
+}) {
+  if (!opts.ready) return ["Still loading Dataverse. Dashboard numbers are not ready yet."];
+  if (!opts.live) {
+    return [opts.error
+      ? `Not connected to live Dataverse (${opts.error}). Refresh after opening the app with pa app run.`
+      : "Not connected to live Dataverse. Open this app with pa app run so the dashboard can read the erc_ tables."];
+  }
+  const gaps = [...(opts.warnings || [])];
+  const noOwner = opts.comms.filter((c) => !c.owner?.trim()).length;
+  const noParty = opts.comms.filter((c) => !c.partyId && !c.party?.trim()).length;
+  const noCat = opts.comms.filter((c) => !c.categoryAssigned).length;
+  const noDue = opts.comms.filter((c) => !c.due?.trim()).length;
+  const noSla = opts.comms.filter((c) => !c.slaId && !c.slaName?.trim()).length;
+  const docOwner = opts.docs.filter((d) => !d.owner?.trim()).length;
+  const docExpiry = opts.docs.filter((d) => !d.expiry?.trim()).length;
+  const docParty = opts.docs.filter((d) => !d.partyId && !d.party?.trim()).length;
+  const partyContact = opts.parties.filter((p) => !p.email?.trim() && !p.domain?.trim()).length;
+  if (noOwner) gaps.push(`${noOwner} communication${noOwner === 1 ? "" : "s"} missing Owner.`);
+  if (noParty) gaps.push(`${noParty} communication${noParty === 1 ? "" : "s"} missing External Party.`);
+  if (noCat) gaps.push(`${noCat} communication${noCat === 1 ? "" : "s"} missing Category.`);
+  if (noDue) gaps.push(`${noDue} communication${noDue === 1 ? "" : "s"} missing Due Date.`);
+  if (noSla) gaps.push(`${noSla} communication${noSla === 1 ? "" : "s"} missing SLA.`);
+  if (docOwner) gaps.push(`${docOwner} license/contract${docOwner === 1 ? "" : "s"} missing Owner.`);
+  if (docExpiry) gaps.push(`${docExpiry} license/contract${docExpiry === 1 ? "" : "s"} missing Expiry Date.`);
+  if (docParty) gaps.push(`${docParty} license/contract${docParty === 1 ? "" : "s"} missing External Party.`);
+  if (partyContact) gaps.push(`${partyContact} external part${partyContact === 1 ? "y" : "ies"} missing email and domain.`);
+  return gaps;
+}
+
 class OverlayError extends Component<{ children: ReactNode; onReset: () => void }, { message: string }> {
   state = { message: "" };
   static getDerivedStateFromError(err: Error) {
@@ -145,7 +175,6 @@ type Modal =
   | { kind: "evidence"; comm: Communication }
   | { kind: "escalate"; comm: Communication }
   | { kind: "escalateDoc"; doc: License }
-  | { kind: "resolveUnmatched"; target: { type: "comm"; comm: Communication } | { type: "mail"; mail: IntakeEmail } }
   | { kind: "docDetail"; doc: License }
   | null;
 
@@ -250,10 +279,22 @@ export default function App() {
   const compliance = closed.length
     ? Math.round((closed.filter((c) => slaState(c) === "Within").length / closed.length) * 100)
     : 0;
-  const catCounts = CATS.map((cat) => ({ cat, n: scopedComms.filter((c) => c.cat === cat).length }));
+  const live = db.source === "dataverse";
+  const kpi = (n: number) => (db.ready && live ? n : "—");
+  const missing = dashboardMissing({
+    live,
+    ready: db.ready,
+    error: db.error,
+    warnings: db.warnings,
+    comms: scopedComms,
+    docs: scopedDocs,
+    parties: scopedParties,
+  });
+  const assignedCats = CATS.map((cat) => ({ cat, n: scopedComms.filter((c) => c.categoryAssigned && c.cat === cat).length }));
+  const unassignedCat = scopedComms.filter((c) => !c.categoryAssigned).length;
+  const catCounts = live ? [...assignedCats, ...(unassignedCat ? [{ cat: "Unassigned" as const, n: unassignedCat }] : [])] : assignedCats;
   const maxCat = Math.max(...catCounts.map((x) => x.n), 1);
   const unprocessed = db.intake.filter((x) => x.status !== "Routed");
-  const unmatchedCount = unmatchedComms().length + unmatchedIntake().length;
   const unreadNoticeCount = unreadNotices(db.notices || []).length;
   const overdueDocs = scopedDocs.filter((d) => d.isOverdue && !d.done);
   const liveDrawer = drawer ? db.comms.find((c) => c.id === drawer.id || c.recordId === drawer.recordId) || drawer : null;
@@ -298,7 +339,6 @@ export default function App() {
                   <span className="ico">{i.ico}</span>
                   <span>{i.text}</span>
                   {i.id === "intake" && unprocessed.length > 0 ? <span className="dot" /> : null}
-                  {i.id === "unmatched" && unmatchedCount > 0 ? <span className="dot" /> : null}
                   {i.id === "notifications" && unreadNoticeCount > 0 ? <span className="dot" /> : null}
                   {i.id === "escalation" && overdueDocs.length > 0 ? <span className="dot" /> : null}
                 </button>
@@ -332,32 +372,46 @@ export default function App() {
 
           {screen === "dashboard" && (
             <>
-              <PageHead title="Executive Dashboard" sub={`${scopedComms.length} communications · ${scopedDocs.length} documents`}>
+              <PageHead
+                title="Executive Dashboard"
+                sub={db.ready
+                  ? (live
+                    ? `${scopedComms.length} communications · ${scopedDocs.length} documents · live Dataverse`
+                    : "Live Dataverse is not connected")
+                  : "Loading Dataverse…"}
+              >
                 <button className="btn btn-outline" type="button" disabled={busy} onClick={() => run("Register refreshed", refresh)}>Refresh</button>
               </PageHead>
-              <div className="callout">
-                <b>Communications:</b> Email activity → Create communication → Is OverDue → Auto or manual escalate once → Close.
-                <b> Licenses:</b> Create document → Days remaining → Risk → Reminder threshold → Renewal task → Owner → Log notification → Renewed or Expiry → Critical → Overdue → Escalation Center.
-              </div>
+              {missing.length ? (
+                <div className={`banner ${live && db.ready ? "warn" : "warn"}`}>
+                  {live && db.ready
+                    ? <>Some live data is incomplete:</>
+                    : <>Dashboard is waiting on real Dataverse data:</>}
+                  <ul className="gaps">
+                    {missing.map((item) => <li key={item}>{item}</li>)}
+                  </ul>
+                </div>
+              ) : (
+                <div className="callout">Figures below are counted from live Dataverse communications, licenses, renewals, and notifications.</div>
+              )}
               <div className="kpis">
-                <Kpi acc="var(--bronze)" label="Total Communications" value={scopedComms.length} detail="All categories" onClick={() => go("tracker")} />
-                <Kpi acc="var(--info)" label="In Progress" value={openComms.length} detail="Not closed" onClick={() => go("pending")} />
-                <Kpi acc="var(--bad)" label="Overdue" value={breached.length} detail="Is OverDue formula column" onClick={() => go("escalation")} />
-                <Kpi acc="var(--ok)" label="SLA Compliance" value={`${compliance}%`} detail="Closed records" />
-                <Kpi acc="var(--warn)" label="Unmatched Senders" value={unmatchedCount} detail="No External Party" onClick={() => go("unmatched")} />
-                <Kpi acc="var(--warn)" label="Renewals Due" value={expiring.length} detail="Within 90 days / expired" onClick={() => go("renewals")} />
-                <Kpi acc="var(--bad)" label="Expired licenses" value={overdueDocs.length} detail="Expiry reached, not renewed" onClick={() => go("escalation")} />
-                <Kpi acc="var(--info)" label="Unread notices" value={unreadNoticeCount} detail="Reminder / expiry / escalation" onClick={() => go("notifications")} />
+                <Kpi acc="var(--bronze)" label="Total Communications" value={kpi(scopedComms.length)} detail={live ? "erc_communications" : "Waiting for Dataverse"} onClick={() => go("tracker")} />
+                <Kpi acc="var(--info)" label="In Progress" value={kpi(openComms.length)} detail="Not closed" onClick={() => go("pending")} />
+                <Kpi acc="var(--bad)" label="Overdue" value={kpi(breached.length)} detail="Is OverDue column" onClick={() => go("escalation")} />
+                <Kpi acc="var(--ok)" label="SLA Compliance" value={db.ready && live ? `${compliance}%` : "—"} detail={closed.length ? "Closed records" : "No closed records yet"} />
+                <Kpi acc="var(--warn)" label="Renewals Due" value={kpi(expiring.length)} detail="Within 90 days / expired" onClick={() => go("renewals")} />
+                <Kpi acc="var(--bad)" label="Expired licenses" value={kpi(overdueDocs.length)} detail="Expiry reached, not renewed" onClick={() => go("escalation")} />
+                <Kpi acc="var(--info)" label="Unread notices" value={kpi(unreadNoticeCount)} detail="Reminder / expiry / escalation" onClick={() => go("notifications")} />
               </div>
               <div className="two">
                 <div className="card chartcard">
                   <h3>Communications by Category</h3>
-                  <div className="cs">Volume across the register</div>
+                  <div className="cs">{live ? "From erc_CategoryF on live records" : "Unavailable until Dataverse is connected"}</div>
                   <div className="bars">
                     {catCounts.map((x) => (
                       <div className="bar" key={x.cat} onClick={() => go("tracker")}>
-                        <b>{x.n}</b>
-                        <i style={{ height: `${(x.n / maxCat) * 70 + 8}%`, background: "var(--bronze)" }} />
+                        <b>{live ? x.n : "—"}</b>
+                        <i style={{ height: `${live ? (x.n / maxCat) * 70 + 8 : 8}%`, background: x.cat === "Unassigned" ? "var(--warn)" : "var(--bronze)" }} />
                         <span>{x.cat.slice(0, 3)}</span>
                       </div>
                     ))}
@@ -365,9 +419,11 @@ export default function App() {
                 </div>
                 <div className="card chartcard">
                   <h3>SLA mix</h3>
-                  <div className="cs">Closed-item compliance {compliance}%</div>
+                  <div className="cs">{live ? `Closed-item compliance ${compliance}%` : "Unavailable until Dataverse is connected"}</div>
                   <div className="donutwrap">
-                    <div className="donut" data-pct={`${compliance}%`} style={{ background: `conic-gradient(var(--ok) 0 ${compliance}%, var(--gold) ${compliance}% ${Math.min(100, compliance + 10)}%, var(--bad) ${Math.min(100, compliance + 10)}% 100%)` }} />
+                    <div className="donut" data-pct={live ? `${compliance}%` : "—"} style={{ background: live
+                      ? `conic-gradient(var(--ok) 0 ${compliance}%, var(--gold) ${compliance}% ${Math.min(100, compliance + 10)}%, var(--bad) ${Math.min(100, compliance + 10)}% 100%)`
+                      : "var(--line)" }} />
                     <div className="legend">
                       <div><i style={{ background: "var(--ok)" }} /> Within SLA</div>
                       <div><i style={{ background: "var(--gold)" }} /> At risk</div>
@@ -396,18 +452,6 @@ export default function App() {
               onSimulate={() => setModal({ kind: "simulate" })}
               onProcess={(mail) => setModal({ kind: "process", mail })}
               onRefresh={() => run("Register refreshed", refresh)}
-            />
-          )}
-
-          {screen === "unmatched" && (
-            <UnmatchedSendersPage
-              q={q}
-              setQ={setQ}
-              busy={busy}
-              onRefresh={() => run("Register refreshed", refresh)}
-              onOpenComm={setDrawer}
-              onResolveComm={(comm) => setModal({ kind: "resolveUnmatched", target: { type: "comm", comm } })}
-              onResolveMail={(mail) => setModal({ kind: "resolveUnmatched", target: { type: "mail", mail } })}
             />
           )}
 
@@ -1079,50 +1123,6 @@ function Modals({
           </div>
         </form>
       </Overlay>
-    );
-  }
-  if (modal.kind === "resolveUnmatched") {
-    const target = modal.target;
-    if (target.type === "comm") {
-      const r = db.comms.find((c) => c.id === target.comm.id) || target.comm;
-      return (
-        <ResolveUnmatchedForm
-          title={`Resolve unmatched — ${r.id}`}
-          sub="Link an External Party or assign a category"
-          sender={r.owner}
-          subject={r.emailSubject || r.subj}
-          received={formatDateTime(r.createdOn || r.rec)}
-          busy={busy}
-          defaultCat={r.categoryAssigned ? r.cat : undefined}
-          onCancel={onClose}
-          onSubmit={(opts) => {
-            if (opts.partyId) void go(`${r.id} linked to party`, () => linkCommToParty(r.id, opts.partyId!));
-            else if (opts.cat) void go(`${r.id} classified as ${opts.cat}`, () => assignCommCategory(r.id, opts.cat!));
-          }}
-        />
-      );
-    }
-    const m = db.intake.find((x) => x.id === target.mail.id) || target.mail;
-    return (
-      <ResolveUnmatchedForm
-        title="Resolve unmatched sender"
-        sub={m.from}
-        sender={m.from}
-        subject={m.subj}
-        received={m.recv}
-        busy={busy}
-        defaultCat={m.cat}
-        onCancel={onClose}
-        onSubmit={(opts) => {
-          void go(
-            opts.partyId ? "Email linked to External Party" : `Email classified as ${opts.cat}`,
-            async () => {
-              const row = await resolveUnmatchedEmail(m, opts);
-              openComm(row);
-            },
-          );
-        }}
-      />
     );
   }
   if (modal.kind === "respond") {

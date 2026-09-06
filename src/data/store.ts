@@ -86,7 +86,21 @@ import type { Erc_notificationsBase } from "../generated/models/Erc_notification
 import type { Erc_renewalsBase } from "../generated/models/Erc_renewalsModel";
 import { attachmentsFromEmailRecord, emailGetOptions, fetchAttachmentContent, listAttachmentsForEmails, mimeFromFileName } from "./emailAttachments";
 
-let store: Store = { ...structuredClone(SEED), ready: false };
+let store: Store = {
+  source: "local",
+  ready: false,
+  sla: [],
+  parties: [],
+  comms: [],
+  docs: [],
+  renewals: [],
+  notices: [],
+  intake: [],
+  files: [],
+  threadByComm: {},
+  businessUnits: [],
+  warnings: [],
+};
 const listeners = new Set<() => void>();
 const escalatingIds = new Set<string>();
 let licenseMonitorRunning = false;
@@ -728,84 +742,100 @@ export async function hydrate(useDataverse: boolean) {
       comms: structuredClone(SEED.comms).map((row) => applyFormulaFields(row)),
       docs: structuredClone(SEED.docs).map((row) => applyLicenseFormulas(row)),
       notices: structuredClone(SEED.notices),
+      warnings: ["Not connected to Dataverse. The dashboard will not show live figures until this app runs inside Power Apps."],
     };
     emit();
     await runAutomaticEscalation();
     await runLicenseMonitor();
     return;
   }
-  try {
-    const [parties, slas, comms, docs, renewals, notices, units] = await Promise.all([
-      withTimeout(Erc_externalpartiesService.getAll({ top: 500, orderBy: ["erc_partyname asc"] }), 20000, "External parties"),
-      withTimeout(Erc_sla2sService.getAll({ top: 100 }), 20000, "SLA rules"),
-      withTimeout(Erc_communicationsService.getAll({ top: 250, orderBy: ["createdon desc"] }), 20000, "Communications"),
-      withTimeout(Erc_licenseandcontractsService.getAll({ top: 250, orderBy: ["erc_expirydate asc"] }), 20000, "Licenses"),
-      withTimeout(Erc_renewalsService.getAll({ top: 250, orderBy: ["erc_duedate asc"] }), 20000, "Renewals"),
-      withTimeout(Erc_notificationsService.getAll({ top: 250, orderBy: ["createdon desc"] }).catch(() => ({ data: [] })), 20000, "Notifications"),
-      withTimeout(BusinessunitsService.getAll({ top: 500, orderBy: ["name asc"] }).catch(() => ({ data: [] as { businessunitid: string; name: string; isdisabled?: boolean }[] })), 20000, "Business units"),
-    ]);
-    const businessUnits: BusinessUnitRef[] = ((units as { data?: { businessunitid: string; name: string; isdisabled?: boolean }[] }).data || [])
-      .filter((u) => u.businessunitid && u.name && u.isdisabled !== true)
-      .map((u) => ({ id: u.businessunitid, name: u.name }));
-    const mappedParties = (parties.data || []).flatMap((row) => {
-      try { return [applyUnitName(mapParty(row), businessUnits)]; } catch { return []; }
-    });
-    const mappedSla = (slas.data || []).flatMap((row) => {
-      try { return [mapSla(row)]; } catch { return []; }
-    });
-    const mappedComms = await resolveMissingOwners((comms.data || []).flatMap((row) => {
-      try { return [applyUnitName(mapComm(row), businessUnits)]; } catch { return []; }
-    }));
-    const mappedDocs = (docs.data || []).flatMap((row) => {
-      try { return [applyUnitName(mapDoc(row), businessUnits)]; } catch { return []; }
-    });
-    const mappedRenewals = (renewals.data || []).flatMap((row) => {
-      try { return [mapRenewal(row)]; } catch { return []; }
-    });
-    const mappedNotices = ((notices as { data?: Parameters<typeof mapNotice>[0][] }).data || []).flatMap((row) => {
-      try { return [mapNotice(row)]; } catch { return []; }
-    });
-    store = {
-      source: "dataverse",
-      ready: true,
-      sla: mappedSla.length ? mappedSla : structuredClone(SEED.sla),
-      parties: mappedParties,
-      comms: mappedComms.map((row) => fillPartyDisplay(row, mappedParties)),
-      docs: mappedDocs,
-      renewals: mappedRenewals,
-      notices: mappedNotices,
-      intake: [],
-      files: [],
-      threadByComm: {},
-      businessUnits,
-    };
-    emit();
+
+  const warnings: string[] = [];
+  async function loadTable<T, R>(
+    name: string,
+    work: Promise<{ data?: T[] }>,
+    mapRow: (row: T) => R,
+    opts: { emptyOk?: boolean } = {},
+  ): Promise<R[]> {
     try {
-      const intake = await loadMailboxEmails(mappedComms, mappedParties);
-      store = { ...store, intake };
-      emit();
-    } catch {
-      /* mailbox is optional — keep the rest of the app visible */
+      const result = await withTimeout(work, 20000, name);
+      const raw = result.data || [];
+      if (!raw.length && !opts.emptyOk) warnings.push(`${name}: no records found in Dataverse.`);
+      return raw.flatMap((row) => {
+        try { return [mapRow(row)]; } catch { return []; }
+      });
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      warnings.push(`${name} could not be loaded (${detail}).`);
+      return [];
     }
-    return;
-  } catch (err) {
-    store = {
-      ...structuredClone(SEED),
-      ready: true,
-      source: "local",
-      comms: structuredClone(SEED.comms).map((row) => applyFormulaFields(row)),
-      docs: structuredClone(SEED.docs).map((row) => applyLicenseFormulas(row)),
-      notices: structuredClone(SEED.notices),
-      error: err instanceof Error ? err.message : "Dataverse is not available in this session.",
-    };
+  }
+
+  const [mappedParties, mappedSla, mappedCommsRaw, mappedDocs, mappedRenewals, mappedNotices, unitRows] = await Promise.all([
+    loadTable("External parties", Erc_externalpartiesService.getAll({ top: 500, orderBy: ["erc_partyname asc"] }), (row) => row),
+    loadTable("SLA rules", Erc_sla2sService.getAll({ top: 100 }), (row) => row),
+    loadTable("Communications", Erc_communicationsService.getAll({ top: 250, orderBy: ["createdon desc"] }), (row) => row),
+    loadTable("Licenses and contracts", Erc_licenseandcontractsService.getAll({ top: 250, orderBy: ["erc_expirydate asc"] }), (row) => row),
+    loadTable("Renewals", Erc_renewalsService.getAll({ top: 250, orderBy: ["erc_duedate asc"] }), (row) => row, { emptyOk: true }),
+    loadTable("Notifications", Erc_notificationsService.getAll({ top: 250, orderBy: ["createdon desc"] }), (row) => row, { emptyOk: true }),
+    loadTable("Business units", BusinessunitsService.getAll({ top: 500, orderBy: ["name asc"] }), (row) => row, { emptyOk: true }),
+  ]);
+
+  const businessUnits: BusinessUnitRef[] = (unitRows as { businessunitid: string; name: string; isdisabled?: boolean }[])
+    .filter((u) => u.businessunitid && u.name && u.isdisabled !== true)
+    .map((u) => ({ id: u.businessunitid, name: u.name }));
+
+  const parties = mappedParties.flatMap((row) => {
+    try { return [applyUnitName(mapParty(row as Parameters<typeof mapParty>[0]), businessUnits)]; } catch { return []; }
+  });
+  const sla = mappedSla.flatMap((row) => {
+    try { return [mapSla(row as Parameters<typeof mapSla>[0])]; } catch { return []; }
+  });
+  const mappedComms = await resolveMissingOwners(mappedCommsRaw.flatMap((row) => {
+    try { return [applyUnitName(mapComm(row as Parameters<typeof mapComm>[0]), businessUnits)]; } catch { return []; }
+  }));
+  const docs = mappedDocs.flatMap((row) => {
+    try { return [applyUnitName(mapDoc(row as Parameters<typeof mapDoc>[0]), businessUnits)]; } catch { return []; }
+  });
+  const renewals = mappedRenewals.flatMap((row) => {
+    try { return [mapRenewal(row as Parameters<typeof mapRenewal>[0])]; } catch { return []; }
+  });
+  const notices = mappedNotices.flatMap((row) => {
+    try { return [mapNotice(row as Parameters<typeof mapNotice>[0])]; } catch { return []; }
+  });
+
+  store = {
+    source: "dataverse",
+    ready: true,
+    error: warnings.some((w) => w.includes("could not be loaded")) && !mappedComms.length && !parties.length && !docs.length
+      ? warnings[0]
+      : undefined,
+    warnings,
+    sla,
+    parties,
+    comms: mappedComms.map((row) => fillPartyDisplay(row, parties)),
+    docs,
+    renewals,
+    notices,
+    intake: [],
+    files: [],
+    threadByComm: {},
+    businessUnits,
+  };
+  emit();
+  try {
+    const intake = await loadMailboxEmails(mappedComms, parties);
+    store = { ...store, intake };
     emit();
-    await runAutomaticEscalation();
-    await runLicenseMonitor();
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    store = { ...store, warnings: [...(store.warnings || []), `Central mailbox emails could not be loaded (${detail}).`] };
+    emit();
   }
 }
 
 export async function refresh() {
-  await hydrate(store.source === "dataverse");
+  await hydrate(true);
 }
 
 export async function addParty(input: Omit<Party, "id" | "status"> & { status?: Party["status"] }) {

@@ -347,7 +347,8 @@ button.toptab{width:auto}
 }
 
 .banner{padding:10px 16px;margin-bottom:14px;border-radius:8px;font-size:12px;background:var(--infobg);color:var(--info);border:1px solid #D5DDE8}
-.banner.warn{background:var(--warnbg);color:var(--warn);border-color:#E8D9B0}
+.gaps{margin:8px 0 0;padding-left:18px;line-height:1.55}
+.gaps li{margin:2px 0}
 .legal-row td:first-child{box-shadow:inset 3px 0 0 var(--bad)}
 .noresults td{color:var(--muted);text-align:center;padding:28px}
 #toast{position:fixed;bottom:26px;left:50%;transform:translateX(-50%) translateY(12px);background:var(--espresso);
