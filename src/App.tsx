@@ -269,7 +269,7 @@ export default function App() {
   );
 
   const openComms = scopedComms.filter((c) => c.status !== "Closed");
-  const mine = openComms.filter((c) => !c.owner || c.owner === ME || db.source === "local");
+  const pending = scopedComms.filter((c) => c.status !== "Closed" && (c.status === "In Progress" || !c.isEscalated));
   const breached = openComms.filter((c) => c.isOverdue || slaState(c) === "Breached");
   const expiring = scopedDocs.filter((d) => {
     const s = docState(d);
@@ -437,10 +437,10 @@ export default function App() {
 
           {screen === "pending" && (
             <>
-              <PageHead title="My Pending Actions" sub={`${mine.length} open items`}>
+              <PageHead title="My Pending Actions" sub={`${pending.length} in progress or not escalated`}>
                 <button className="btn btn-primary" type="button" onClick={() => setModal({ kind: "comm" })}>New Communication</button>
               </PageHead>
-              <CommTable rows={mine} q={q} setQ={setQ} onOpen={setDrawer} />
+              <CommTable rows={pending} q={q} setQ={setQ} onOpen={setDrawer} />
             </>
           )}
 
@@ -1344,24 +1344,34 @@ function Modals({
 function PartyForm({ onCancel, onSave }: { onCancel: () => void; onSave: () => void }) {
   const db = useStore();
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const f = new FormData(e.currentTarget);
+    const domain = String(f.get("domain") || "").trim();
+    if (!domain) {
+      setError("Domain is required.");
+      return;
+    }
     const buId = String(f.get("bu") || "");
     const unit = db.businessUnits.find((u) => u.id === buId);
     setBusy(true);
+    setError("");
     try {
       await addParty({
         name: String(f.get("name")),
         category: String(f.get("category")) as Category,
         email: String(f.get("email")),
-        domain: String(f.get("domain")),
+        domain,
         bu: unit?.name || String(f.get("bu") || ""),
         buId: unit?.id || buId || undefined,
         owner: ME,
         criticality: String(f.get("crit")) as "High" | "Medium" | "Low",
+        status: "Draft",
       });
       onSave();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not create the party.");
     } finally {
       setBusy(false);
     }
@@ -1374,13 +1384,17 @@ function PartyForm({ onCancel, onSave }: { onCancel: () => void; onSave: () => v
         <div><label>Category *</label><select name="category">{CATS.map((c) => <option key={c}>{c}</option>)}</select></div>
         <div><label>Priority *</label><select name="crit" defaultValue="High"><option>High</option><option>Medium</option><option>Low</option></select></div>
         <div><label>Official email *</label><input name="email" type="email" required /></div>
-        <div><label>Sender domain *</label><input name="domain" required placeholder="mohp.gov.eg" /></div>
+        <div>
+          <label>Domain *</label>
+          <input name="domain" required minLength={3} placeholder="gmail.com" />
+        </div>
         <div><label>Business unit *</label>
           <select name="bu" required>
             {units.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
           </select>
         </div>
       </div>
+      {error ? <div className="note">{error}</div> : <div className="note">The party is saved as Draft so IT can be notified. Domain is required so inbound senders can be matched.</div>}
       <div className="df" style={{ margin: "16px -20px -20px" }}>
         <button className="btn btn-primary" type="submit" disabled={busy}>Create Party</button>
         <button className="btn btn-ghost" type="button" onClick={onCancel}>Cancel</button>

@@ -14,6 +14,7 @@ import {
   type Erc_communications,
 } from "../generated/models/Erc_communicationsModel";
 import type { Erc_externalparties } from "../generated/models/Erc_externalpartiesModel";
+import { Erc_externalpartiescr18c_extrnalparty_status } from "../generated/models/Erc_externalpartiesModel";
 import {
   Erc_licenseandcontractserc_documenttype,
   Erc_licenseandcontractserc_renewalstatus,
@@ -286,6 +287,21 @@ export function recordOwner(row: object, formattedName?: string): { id?: string;
 
 export { lookupDisplay };
 
+export function asPartyStatus(row: Erc_externalparties): Party["status"] {
+  const fromChoice = Erc_externalpartiescr18c_extrnalparty_status[row.cr18c_extrnalparty_status as 1 | 2 | 3];
+  const label = cleanLabel(row.cr18c_extrnalparty_statusname || fromChoice).replace(/^inactive$/i, "Inactive");
+  if (label === "Draft") return "Draft";
+  if (label === "InActive" || label === "Inactive") return "Inactive";
+  if (label === "Active") return "Active";
+  return row.statecode === 1 ? "Inactive" : "Active";
+}
+
+export function partyStatusChoice(status: Party["status"]): 1 | 2 | 3 {
+  if (status === "Draft") return 1;
+  if (status === "Inactive") return 3;
+  return 2;
+}
+
 export function mapParty(row: Erc_externalparties): Party {
   const crit = cleanLabel(row.erc_defaultpriorityname || row.erc_priorityname);
   const unit = lookupRef(row, "erc_businessunit", row.erc_businessunitname);
@@ -302,7 +318,7 @@ export function mapParty(row: Erc_externalparties): Party {
     departmentId: dept.id,
     owner: lookupDisplay(row, "erc_defaultowner", row.erc_defaultownername) || recordOwner(row, row.owneridname).name,
     criticality: crit === "Low" || crit === "Medium" ? crit : "High",
-    status: row.erc_active === false || row.statecode === 1 ? "Inactive" : "Active",
+    status: asPartyStatus(row),
   };
 }
 

@@ -10,6 +10,40 @@
       "x-ms-dataverse-primary-id": "erc_externalpartyid",
       "x-ms-dataverse-primary-name": "erc_partyname",
       "properties": {
+        "cr18c_extrnalparty_status": {
+          "type": "string",
+          "title": "ExtrnalParty_status",
+          "x-ms-dataverse-attribute": "cr18c_extrnalparty_status",
+          "x-ms-dataverse-type": "PicklistType",
+          "x-ms-schema-name": "cr18c_ExtrnalParty_status",
+          "enum": [
+            "Draft",
+            "Active",
+            "InActive"
+          ],
+          "x-ms-enum-values": [
+            1,
+            2,
+            3
+          ],
+          "Color": [
+            null,
+            null,
+            null
+          ],
+          "x-ms-optionsetmetadataid": "f9feb2a8-d5a9-f111-aaac-00224882d001",
+          "x-ms-isGlobal": true,
+          "x-ms-optionsetdisplayname": "states",
+          "x-ms-optionSetType": "Picklist"
+        },
+        "cr18c_extrnalparty_statusname": {
+          "type": "string",
+          "title": "cr18c_extrnalparty_statusname",
+          "x-ms-dataverse-attribute": "cr18c_extrnalparty_statusname",
+          "x-ms-dataverse-type": "VirtualType",
+          "x-ms-schema-name": "cr18c_extrnalparty_statusName",
+          "x-ms-read-only": true
+        },
         "createdby": {
           "type": "string",
           "title": "Created By",
@@ -71,37 +105,6 @@
           "x-ms-read-only": true,
           "required": true,
           "maxLength": 100
-        },
-        "erc_active": {
-          "type": "string",
-          "title": "Active",
-          "x-ms-dataverse-attribute": "erc_active",
-          "x-ms-dataverse-type": "BooleanType",
-          "x-ms-schema-name": "erc_Active",
-          "enum": [
-            "True",
-            "False"
-          ],
-          "x-ms-enum-values": [
-            0,
-            1
-          ],
-          "Color": [
-            null,
-            null
-          ],
-          "x-ms-optionsetmetadataid": "93205858-106a-43a7-b97a-7a8440c25c92",
-          "x-ms-isGlobal": false,
-          "x-ms-optionsetdisplayname": "Active",
-          "x-ms-optionSetType": "Boolean"
-        },
-        "erc_activename": {
-          "type": "string",
-          "title": "erc_activename",
-          "x-ms-dataverse-attribute": "erc_activename",
-          "x-ms-dataverse-type": "VirtualType",
-          "x-ms-schema-name": "erc_activeName",
-          "x-ms-read-only": true
         },
         "erc_businessunit": {
           "type": "string",

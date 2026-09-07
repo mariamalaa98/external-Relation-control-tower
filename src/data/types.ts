@@ -58,7 +58,7 @@ export type Party = {
   departmentId?: string;
   owner: string;
   criticality: "High" | "Medium" | "Low";
-  status: "Active" | "Inactive";
+  status: "Draft" | "Active" | "Inactive";
 };
 
 export type LogEntry = { title: string; meta: string };

@@ -25,6 +25,7 @@ import {
   noticeResultChoice,
   noticeTypeChoice,
   nowStamp,
+  partyStatusChoice,
   renewalChoice,
   renewalRiskChoice,
   renewalTaskStatusChoice,
@@ -166,9 +167,9 @@ function nextLocalNoticeId() {
   return nextSeq(store.notices.map((c) => c.id), "NTF-2026-");
 }
 
-function isGuid(id?: string) {
-  if (!id) return false;
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id.replace(/[{}]/g, ""));
+function isGuid(id?: unknown): id is string {
+  if (typeof id !== "string" || !id) return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id.replace(/[{}]/g, "").trim());
 }
 
 function replaceDoc(next: License) {
@@ -838,64 +839,168 @@ export async function refresh() {
   await hydrate(true);
 }
 
+function dataverseMessage(err: unknown): string {
+  if (err instanceof Error && err.message.trim()) return err.message;
+  if (typeof err === "string" && err.trim()) return err;
+  if (err && typeof err === "object") {
+    const row = err as {
+      message?: string;
+      errorMessage?: string;
+      error?: { message?: string; error?: { message?: string } };
+      data?: { message?: string };
+    };
+    return String(
+      row.message
+      || row.errorMessage
+      || row.error?.message
+      || row.error?.error?.message
+      || row.data?.message
+      || "",
+    ).trim();
+  }
+  return "";
+}
+
+function partyIdFromResult(result: unknown): string | undefined {
+  if (!result) return undefined;
+  if (isGuid(result)) return result.trim();
+  if (typeof result !== "object") return undefined;
+  const row = result as Record<string, unknown>;
+  const data = row.data;
+  if (isGuid(data)) return String(data).trim();
+  const bags = [data, row].filter((item): item is Record<string, unknown> => !!item && typeof item === "object" && !Array.isArray(item));
+  for (const bag of bags) {
+    const direct = bag.erc_externalpartyid ?? bag.id ?? bag.Id;
+    if (isGuid(direct)) return String(direct).trim();
+    const odata = bag["@odata.id"] ?? bag["odata.id"] ?? bag.odataid;
+    if (typeof odata === "string") {
+      const match = odata.match(/\(([0-9a-f-]{36})\)/i);
+      if (match?.[1]) return match[1];
+    }
+  }
+  return undefined;
+}
+
+function odataQuote(value: string) {
+  return value.replace(/'/g, "''");
+}
+
+async function createExternalParty(record: Omit<Erc_externalpartiesBase, "erc_externalpartyid">) {
+  try {
+    const result = await Erc_externalpartiesService.create(record);
+    const failed = (result as { success?: boolean; wasSuccessful?: boolean }).success === false
+      || (result as { wasSuccessful?: boolean }).wasSuccessful === false;
+    const id = partyIdFromResult(result);
+    if (failed && !id) throw new Error(dataverseMessage(result) || "Dataverse rejected the External Party create.");
+    return { id, result };
+  } catch (err) {
+    throw new Error(dataverseMessage(err) || "Could not create the External Party in Dataverse.");
+  }
+}
+
+async function findCreatedPartyId(name: string, email: string) {
+  const filters = [
+    `erc_partyname eq '${odataQuote(name)}' and erc_officialemail eq '${odataQuote(email)}'`,
+    `erc_partyname eq '${odataQuote(name)}'`,
+  ];
+  for (const filter of filters) {
+    try {
+      const rows = await Erc_externalpartiesService.getAll({ top: 5, filter, orderBy: ["createdon desc"] });
+      const id = rows.data?.map((row) => row.erc_externalpartyid).find((value) => isGuid(value));
+      if (id) return id;
+    } catch { /* try next filter */ }
+  }
+  return undefined;
+}
+
 export async function addParty(input: Omit<Party, "id" | "status"> & { status?: Party["status"] }) {
+  const domain = String(input.domain || "")
+    .trim()
+    .replace(/^https?:\/\//i, "")
+    .replace(/^www\./i, "")
+    .replace(/\/.*$/, "")
+    .replace(/^@/, "")
+    .toLowerCase();
+  if (!domain || !domain.includes(".")) {
+    throw new Error("Domain is required (for example gmail.com or mohp.gov.eg), without @.");
+  }
   const unit = store.businessUnits.find((u) => u.id === input.buId || u.name === input.bu);
   const party: Party = {
     ...input,
+    domain,
     id: `P${Date.now()}`,
-    status: input.status || "Active",
+    status: input.status || "Draft",
     bu: unit?.name || input.bu,
     buId: unit?.id || input.buId,
   };
   if (store.source === "dataverse") {
-    const payload = {
-      erc_partyname: party.name,
-      erc_officialemail: party.email,
-      erc_domain: party.domain,
-      erc_category: categoryChoice(party.category),
-      erc_defaultpriority: defaultPriorityChoice(party.criticality),
-      erc_priority: party.criticality === "Low" ? 4 : party.criticality === "Medium" ? 3 : 2,
-      erc_active: true,
-      ...(party.buId && !party.buId.startsWith("P") && /^[0-9a-f-]{36}$/i.test(party.buId) ? { "erc_BusinessUnit@odata.bind": `/businessunits(${party.buId})` } : {}),
-    } as Omit<Erc_externalpartiesBase, "erc_externalpartyid">;
-    let created;
-    try {
-      created = await Erc_externalpartiesService.create(payload);
-    } catch {
-      created = await Erc_externalpartiesService.create({
+    const statusChoice = partyStatusChoice(party.status);
+    const buBind = party.buId && !party.buId.startsWith("P") && /^[0-9a-f-]{36}$/i.test(party.buId)
+      ? { "erc_BusinessUnit@odata.bind": `/businessunits(${party.buId})` }
+      : {};
+    const attempts: Array<Omit<Erc_externalpartiesBase, "erc_externalpartyid">> = [
+      {
         erc_partyname: party.name,
         erc_officialemail: party.email,
         erc_domain: party.domain,
         erc_category: categoryChoice(party.category),
         erc_defaultpriority: defaultPriorityChoice(party.criticality),
-        erc_active: true,
-      } as Omit<Erc_externalpartiesBase, "erc_externalpartyid">);
-      if (created.data && party.buId && /^[0-9a-f-]{36}$/i.test(party.buId)) {
-        try {
-          await Erc_externalpartiesService.update(created.data.erc_externalpartyid, {
-            "erc_BusinessUnit@odata.bind": `/businessunits(${party.buId})`,
-            erc_defaultpriority: defaultPriorityChoice(party.criticality),
-            erc_priority: party.criticality === "Low" ? 4 : party.criticality === "Medium" ? 3 : 2,
-          });
-        } catch { /* party exists; lookup may be retried by the user */ }
+        erc_priority: party.criticality === "Low" ? 4 : party.criticality === "Medium" ? 3 : 2,
+        cr18c_extrnalparty_status: statusChoice,
+        ...buBind,
+      } as Omit<Erc_externalpartiesBase, "erc_externalpartyid">,
+      {
+        erc_partyname: party.name,
+        erc_officialemail: party.email,
+        erc_domain: party.domain,
+        erc_category: categoryChoice(party.category),
+        erc_defaultpriority: defaultPriorityChoice(party.criticality),
+        cr18c_extrnalparty_status: statusChoice,
+      } as Omit<Erc_externalpartiesBase, "erc_externalpartyid">,
+      {
+        erc_partyname: party.name,
+        erc_officialemail: party.email,
+        erc_domain: party.domain,
+        erc_category: categoryChoice(party.category),
+        erc_defaultpriority: defaultPriorityChoice(party.criticality),
+      } as Omit<Erc_externalpartiesBase, "erc_externalpartyid">,
+    ];
+    let id: string | undefined;
+    const errors: string[] = [];
+    for (const attempt of attempts) {
+      try {
+        const created = await createExternalParty(attempt);
+        id = created.id || await findCreatedPartyId(party.name, party.email);
+        if (id) break;
+        errors.push("Create returned no record id.");
+      } catch (err) {
+        errors.push(dataverseMessage(err) || "Create failed.");
       }
     }
-    if (created.data) {
-      party.id = created.data.erc_externalpartyid;
-      try {
-        const live = await Erc_externalpartiesService.get(party.id);
-        if (live.data) {
-          const mapped = mapParty(live.data);
-          Object.assign(party, mapped, {
-            criticality: mapped.criticality || party.criticality,
-            ...applyUnitName({
-              bu: mapped.bu || party.bu,
-              buId: mapped.buId || party.buId,
-            }, store.businessUnits),
-          });
-        }
-      } catch { /* keep submitted values */ }
+    if (!id) {
+      throw new Error(errors.filter(Boolean).pop() || "Dataverse did not save the External Party. Check required columns and try again.");
     }
+    party.id = id;
+    try {
+      await Erc_externalpartiesService.update(id, {
+        cr18c_extrnalparty_status: statusChoice,
+        ...buBind,
+      });
+    } catch { /* party exists; status/BU can be completed by the flow or a later edit */ }
+    try {
+      const live = await Erc_externalpartiesService.get(party.id);
+      if (live.data) {
+        const mapped = mapParty(live.data);
+        Object.assign(party, mapped, {
+          status: mapped.status || party.status,
+          criticality: mapped.criticality || party.criticality,
+          ...applyUnitName({
+            bu: mapped.bu || party.bu,
+            buId: mapped.buId || party.buId,
+          }, store.businessUnits),
+        });
+      }
+    } catch { /* keep submitted values */ }
   }
   store = { ...store, parties: [party, ...store.parties] };
   emit();
