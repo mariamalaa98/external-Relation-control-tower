@@ -3,7 +3,6 @@ import {
   BUS,
   CATS,
   COMM_STATUSES,
-  CENTRAL_MAILBOX_ADDRESSES,
   MAILBOX_MAHA,
   MAILBOX_PROD,
   MAILBOX_TEST,
@@ -20,14 +19,11 @@ import {
   ME,
   TODAY,
   addComm,
-  addDoc,
-  addEvidence,
   addParty,
   closeComm,
   commLocked,
-  completeCycle,
   daysBetween,
-  docLocked,
+  dateOnly,
   docState,
   escalateManually,
   escalateLicense,
@@ -35,20 +31,16 @@ import {
   formatDateTime,
   refresh,
   reopenComm,
-  reopenDoc,
   renewDoc,
   respondToComm,
   routeEmail,
   runAutomaticEscalation,
   runLicenseMonitor,
   tickFormulas,
-  sendRenewalNotice,
-  simulateInboundEmail,
   slaState,
   summarizeMonitor,
   unreadNotices,
   useStore,
-  DEFAULT_REMINDER_THRESHOLD,
   matchesSearch,
   partyOrgOptions,
   partyMatchesOrg,
@@ -59,7 +51,9 @@ import {
 } from "./data/store";
 import { DataTable, FilterField, Kpi, Overlay, OrgFilterFields, PageHead, catBadge, flagBadge, priBadge, statusBadge } from "./ui/widgets";
 import { CloseCommForm, CommRecordForm, EscalationCenter } from "./ui/communication";
-import { LicenseEscalationPanel, NotificationCenter, RenewalTaskTable } from "./ui/license";
+import { LicenseCreateForm, LicenseEscalationPanel, LicenseRecordForm, LicenseTracker, NotificationCenter, RenewalTaskTable } from "./ui/license";
+import { ArchiveUploadForm, DocumentArchiveScreen } from "./ui/archive";
+import { CommunicationAuditScreen, NotificationAuditScreen } from "./ui/audit";
 
 const NAV = [
   { area: "ops", group: "COMMAND CENTER", items: [
@@ -95,6 +89,10 @@ const NAV = [
   ]},
 ] as const;
 
+function padCal(n: number) {
+  return String(n).padStart(2, "0");
+}
+
 const AREAS = [
   { id: "ops", label: "Communications" },
   { id: "comp", label: "Licenses & Contracts" },
@@ -103,7 +101,7 @@ const AREAS = [
 
 type ScreenId = (typeof NAV)[number]["items"][number]["id"];
 type AreaId = (typeof AREAS)[number]["id"];
-const LATER: ScreenId[] = ["archive", "reports", "auditComm", "auditNotif"];
+const LATER: ScreenId[] = [];
 
 function dashboardMissing(opts: {
   live: boolean;
@@ -167,7 +165,6 @@ type Modal =
   | { kind: "party" }
   | { kind: "comm" }
   | { kind: "doc" }
-  | { kind: "simulate" }
   | { kind: "process"; mail: IntakeEmail }
   | { kind: "respond"; comm: Communication }
   | { kind: "close"; comm: Communication }
@@ -187,13 +184,12 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [modal, setModal] = useState<Modal>(null);
   const [drawer, setDrawer] = useState<Communication | null>(null);
-  const [calMonth, setCalMonth] = useState("2026-09");
+  const [calMonth, setCalMonth] = useState(() => TODAY.slice(0, 7));
   const [calView, setCalView] = useState<"cal" | "list" | "risk">("cal");
-  const [docType, setDocType] = useState("All");
-  const [docStatus, setDocStatus] = useState("All");
   const [orgBu, setOrgBu] = useState("All");
   const [orgDept, setOrgDept] = useState("All");
   const [escTab, setEscTab] = useState<"comms" | "licenses">("comms");
+  const [navOpen, setNavOpen] = useState(false);
   const lastDeepLink = useRef("");
 
   useEffect(() => {
@@ -202,6 +198,11 @@ export default function App() {
     }, 60000);
     return () => window.clearInterval(id);
   }, []);
+
+  useEffect(() => {
+    document.body.style.overflow = navOpen ? "hidden" : "";
+    return () => { document.body.style.overflow = ""; };
+  }, [navOpen]);
 
   async function openFromDeepLink(guid: string) {
     const clean = guid.replace(/[{}]/g, "").toLowerCase();
@@ -237,6 +238,7 @@ export default function App() {
     if (found) setArea(found.area);
     setScreen(id);
     setQ("");
+    setNavOpen(false);
   }
   function ping(msg: string) {
     setToast(msg);
@@ -254,18 +256,29 @@ export default function App() {
     }
   }
 
-  const orgOpts = useMemo(() => partyOrgOptions(db.parties, orgBu, db.businessUnits), [db.parties, db.businessUnits, orgBu]);
+  const orgOpts = useMemo(
+    () => partyOrgOptions(db.parties, orgBu, db.businessUnits, { comms: db.comms, docs: db.docs, departments: db.departments }),
+    [db.parties, db.comms, db.docs, db.businessUnits, db.departments, orgBu],
+  );
   const scopedParties = useMemo(
-    () => db.parties.filter((p) => partyMatchesOrg(p, orgBu, orgDept, db.businessUnits)),
-    [db.parties, db.businessUnits, orgBu, orgDept],
+    () => db.parties.filter((p) => partyMatchesOrg(p, orgBu, orgDept, db.businessUnits, db.departments)),
+    [db.parties, db.businessUnits, db.departments, orgBu, orgDept],
   );
   const scopedComms = useMemo(
-    () => db.comms.filter((c) => commMatchesOrg(c, orgBu, orgDept, db.parties, db.businessUnits)),
-    [db.comms, db.parties, db.businessUnits, orgBu, orgDept],
+    () => db.comms.filter((c) => commMatchesOrg(c, orgBu, orgDept, db.parties, db.businessUnits, db.departments)),
+    [db.comms, db.parties, db.businessUnits, db.departments, orgBu, orgDept],
   );
   const scopedDocs = useMemo(
-    () => db.docs.filter((d) => docMatchesOrg(d, orgBu, orgDept, db.parties, db.businessUnits)),
-    [db.docs, db.parties, db.businessUnits, orgBu, orgDept],
+    () => db.docs.filter((d) => docMatchesOrg(d, orgBu, orgDept, db.parties, db.businessUnits, db.departments)),
+    [db.docs, db.parties, db.businessUnits, db.departments, orgBu, orgDept],
+  );
+  const scopedIntake = useMemo(
+    () => db.intake.filter((x) => {
+      if (orgBu === "All" && orgDept === "All") return true;
+      const party = db.parties.find((p) => p.name === x.match);
+      return !!party && partyMatchesOrg(party, orgBu, orgDept, db.businessUnits, db.departments);
+    }),
+    [db.intake, db.parties, db.businessUnits, db.departments, orgBu, orgDept],
   );
 
   const openComms = scopedComms.filter((c) => c.status !== "Closed");
@@ -302,6 +315,7 @@ export default function App() {
   return (
     <>
       <header>
+        <button type="button" className="nav-toggle" aria-label="Open menu" onClick={() => setNavOpen(true)}>☰</button>
         <span className="brand">Andalusia Pulse</span>
         <div className="toptabs">
           {AREAS.map((a) => (
@@ -322,14 +336,16 @@ export default function App() {
           <div className="avatar">MA</div>
         </div>
       </header>
+      <div className={`nav-scrim${navOpen ? " open" : ""}`} onClick={() => setNavOpen(false)} />
       <div className="shell">
-        <aside>
+        <aside className={navOpen ? "open" : ""}>
           <div className="profile">
             <div className="ini">ER</div>
             <div>
               <div className="t">External Relations</div>
               <div className="r">Control Tower</div>
             </div>
+            <button type="button" className="nav-close" aria-label="Close menu" onClick={() => setNavOpen(false)}>×</button>
           </div>
           {NAV.filter((g) => g.area === area).map((g) => (
             <div key={g.group}>
@@ -347,12 +363,6 @@ export default function App() {
           ))}
         </aside>
         <main>
-          <div className={`banner ${db.source === "dataverse" ? "" : "warn"}`}>
-            {db.source === "dataverse"
-              ? <>Connected to Dataverse · central mailboxes <b>{MAILBOX_MAHA}</b> · <b>{MAILBOX_TEST}</b> · production <b>{MAILBOX_PROD}</b> · Power Automate owns create, auto-escalate, and close stamps</>
-              : <>Running on prototype data{db.error ? ` (${db.error})` : ""}. Use <b>pa app run</b> to load live <b>erc_</b> records.</>}
-          </div>
-
           {!LATER.includes(screen) && screen !== "admin" ? (
             <div className="filters org-filters">
               <OrgFilterFields
@@ -362,8 +372,8 @@ export default function App() {
                 dept={orgDept}
                 onBu={(next) => {
                   setOrgBu(next);
-                  const depts = partyOrgOptions(db.parties, next, db.businessUnits).departments;
-                  if (orgDept !== "All" && !depts.includes(orgDept)) setOrgDept("All");
+                  const depts = partyOrgOptions(db.parties, next, db.businessUnits, { comms: db.comms, docs: db.docs, departments: db.departments }).departments;
+                  if (orgDept !== "All" && !depts.some((name) => name.toLowerCase() === orgDept.toLowerCase())) setOrgDept("All");
                 }}
                 onDept={setOrgDept}
               />
@@ -449,9 +459,9 @@ export default function App() {
               q={q}
               setQ={setQ}
               busy={busy}
-              onSimulate={() => setModal({ kind: "simulate" })}
+              mails={scopedIntake}
               onProcess={(mail) => setModal({ kind: "process", mail })}
-              onRefresh={() => run("Register refreshed", refresh)}
+              onRefresh={() => run("Mailbox refreshed", refresh)}
             />
           )}
 
@@ -540,8 +550,8 @@ export default function App() {
                 <button className="btn btn-primary" type="button" onClick={() => setModal({ kind: "party" })}>New Party</button>
               </PageHead>
               <div className="filters">
-                <FilterField label="Search">
-                  <input placeholder="Search party, domain, email" value={q} onChange={(e) => setQ(e.target.value)} />
+                <FilterField label="Search" className="ffld-search">
+                  <input type="search" placeholder="Search party, domain, email" value={q} onChange={(e) => setQ(e.target.value)} />
                 </FilterField>
               </div>
               <DataTable
@@ -572,14 +582,11 @@ export default function App() {
                 <button className="btn btn-outline" type="button" disabled={busy} onClick={() => run("Expiry monitor ran", async () => summarizeMonitor(await runLicenseMonitor()))}>Run expiry monitor</button>
                 <button className="btn btn-primary" type="button" onClick={() => setModal({ kind: "doc" })}>New Document</button>
               </PageHead>
-              <DocTable
+              <LicenseTracker
                 rows={scopedDocs}
                 q={q}
                 setQ={setQ}
-                typeFilter={docType}
-                statusFilter={docStatus}
-                onType={setDocType}
-                onStatus={setDocStatus}
+                busy={busy}
                 onOpen={(doc) => setModal({ kind: "docDetail", doc })}
                 onRenew={(doc) => run(`${doc.name} renewed`, () => renewDoc(doc.id))}
               />
@@ -628,13 +635,54 @@ export default function App() {
             </>
           )}
 
-          {LATER.includes(screen) && (
+          {screen === "archive" && (
             <>
-              <PageHead
-                title={NAV.flatMap((g) => [...g.items]).find((i) => i.id === screen)?.text || ""}
-                sub="Next phase — mailbox archive, notification tables, and Power BI"
-              />
-              <div className="ph">This screen is not part of the current cycle. Use Mailbox Intake, Communication Tracker, and License & Contract Tracker.</div>
+              <PageHead title="Document Archive" sub={`${db.archives.length} files on erc_documentarchive`} />
+              <DocumentArchiveScreen q={q} setQ={setQ} busy={busy} onToast={ping} onFail={ping} />
+            </>
+          )}
+
+          {screen === "auditComm" && (
+            <CommunicationAuditScreen
+              q={q}
+              setQ={setQ}
+              comms={scopedComms}
+              audits={db.audits}
+              threads={db.threadByComm}
+              busy={busy}
+              onOpen={setDrawer}
+              onRefresh={() => void run("Refreshed", () => refresh())}
+            />
+          )}
+
+          {screen === "auditNotif" && (
+            <NotificationAuditScreen
+              q={q}
+              setQ={setQ}
+              docs={scopedDocs}
+              notices={db.notices}
+              renewals={db.renewals}
+              parties={db.parties}
+              busy={busy}
+              onOpen={(doc) => setModal({ kind: "docDetail", doc })}
+              onRefresh={() => void run("Refreshed", () => refresh())}
+              onDone={ping}
+              onFail={ping}
+            />
+          )}
+
+          {screen === "reports" && (
+            <>
+              <PageHead title="Power BI Reports" sub="Operational counts from the same Dataverse tables. Embed a Power BI report here when the workspace is ready." />
+              <div className="kpis">
+                <Kpi acc="var(--bronze)" label="Communications" value={kpi(scopedComms.length)} detail="erc_communication" onClick={() => go("tracker")} />
+                <Kpi acc="var(--info)" label="Licenses" value={kpi(scopedDocs.length)} detail="erc_licenseandcontract" onClick={() => go("licenses")} />
+                <Kpi acc="var(--warn)" label="Archive files" value={kpi(db.archives.length)} detail="erc_documentarchive" onClick={() => go("archive")} />
+                <Kpi acc="var(--ok)" label="Audit events" value={kpi(db.audits.length)} detail="erc_communicationaudit" onClick={() => go("auditComm")} />
+                <Kpi acc="var(--info)" label="Notices" value={kpi(db.notices.length)} detail="erc_notification" onClick={() => go("auditNotif")} />
+                <Kpi acc="var(--bad)" label="Overdue" value={kpi(breached.length)} detail="Is OverDue" onClick={() => go("escalation")} />
+              </div>
+              <div className="callout">These figures are live from Dataverse. A published Power BI report can replace this page later without adding a table.</div>
             </>
           )}
         </main>
@@ -651,6 +699,7 @@ export default function App() {
             onEscalate={() => {
               if (canManualEscalate(liveDrawer)) setModal({ kind: "escalate", comm: liveDrawer });
             }}
+            onEvidence={() => setModal({ kind: "evidence", comm: liveDrawer })}
             onSaved={ping}
           />
         </OverlayError>
@@ -691,8 +740,8 @@ function CommTable({
   return (
     <>
       <div className="filters">
-        <FilterField label="Search">
-          <input placeholder="Search ID, party, subject, owner" value={q} onChange={(e) => setQ(e.target.value)} />
+        <FilterField label="Search" className="ffld-search">
+          <input type="search" placeholder="Search ID, party, subject, owner" value={q} onChange={(e) => setQ(e.target.value)} />
         </FilterField>
         {!legal && (
           <FilterField label="Category">
@@ -751,35 +800,28 @@ function CommTable({
 }
 
 function IntakeScreen({
-  q, setQ, busy, onSimulate, onProcess, onRefresh,
+  q, setQ, busy, mails, onProcess, onRefresh,
 }: {
   q: string;
   setQ: (v: string) => void;
   busy: boolean;
-  onSimulate: () => void;
+  mails: IntakeEmail[];
   onProcess: (mail: IntakeEmail) => void;
   onRefresh: () => void;
 }) {
-  const db = useStore();
   const [status, setStatus] = useState("All");
-  const rows = db.intake.filter((x) =>
+  const rows = mails.filter((x) =>
     matchesSearch(q, x.from, x.to, x.subj, x.match, x.recv, x.status, x.owner, x.commId, x.threadAction, x.match ? "" : "unmatched")
     && (status === "All" || x.status === status)
   );
   return (
     <>
-      <PageHead title="Central Mailbox" sub={`${db.intake.length} emails to ${MAILBOX_MAHA}, ${MAILBOX_TEST}, ${MAILBOX_PROD}`}>
-        <button className="btn btn-outline" type="button" disabled={busy} onClick={onRefresh}>Refresh</button>
-        <button className="btn btn-primary" type="button" onClick={onSimulate}>Simulate Dataverse email</button>
+      <PageHead title="Central Mailbox" sub={`${mails.length} emails to ${MAILBOX_MAHA}, ${MAILBOX_TEST}, ${MAILBOX_PROD}`}>
+        <button className="btn btn-primary" type="button" disabled={busy} onClick={onRefresh}>Refresh</button>
       </PageHead>
-      <div className="callout">
-        Native <b>email</b> activities addressed to a central mailbox are listed here:
-        <b>{MAILBOX_MAHA}</b>, <b>{MAILBOX_TEST}</b>, or production <b>{MAILBOX_PROD}</b>.
-        The <b>Create new communication</b> flow still only auto-creates a record when Regarding is set and the To recipient is a mailbox.
-      </div>
       <div className="filters">
-        <FilterField label="Search">
-          <input placeholder="Search sender or subject" value={q} onChange={(e) => setQ(e.target.value)} />
+        <FilterField label="Search" className="ffld-search">
+          <input type="search" placeholder="Search sender or subject" value={q} onChange={(e) => setQ(e.target.value)} />
         </FilterField>
         <FilterField label="Status">
           <select value={status} onChange={(e) => setStatus(e.target.value)}><option>All</option><option>New</option><option>In Review</option><option>Routed</option></select>
@@ -809,64 +851,6 @@ function IntakeScreen({
   );
 }
 
-function DocTable({
-  rows, q, setQ, typeFilter, statusFilter, onType, onStatus, onOpen, onRenew,
-}: {
-  rows: License[];
-  q: string;
-  setQ: (v: string) => void;
-  typeFilter: string;
-  statusFilter: string;
-  onType: (v: string) => void;
-  onStatus: (v: string) => void;
-  onOpen: (row: License) => void;
-  onRenew: (row: License) => void;
-}) {
-  const filtered = useMemo(() => rows.filter((r) => {
-    const st = docState(r);
-    return `${r.id} ${r.name} ${r.party}`.toLowerCase().includes(q.toLowerCase())
-      && (typeFilter === "All" || r.type === typeFilter)
-      && (statusFilter === "All" || st === statusFilter);
-  }), [rows, q, typeFilter, statusFilter]);
-  return (
-    <>
-      <div className="filters">
-        <FilterField label="Search">
-          <input placeholder="Search document, party" value={q} onChange={(e) => setQ(e.target.value)} />
-        </FilterField>
-        <FilterField label="Type">
-          <select value={typeFilter} onChange={(e) => onType(e.target.value)}><option>All</option><option>License</option><option>Contract</option><option>Permit</option></select>
-        </FilterField>
-        <FilterField label="Status">
-          <select value={statusFilter} onChange={(e) => onStatus(e.target.value)}><option>All</option><option>Active</option><option>Expiring</option><option>Expired</option><option>Renewed</option></select>
-        </FilterField>
-        <span className="fnote">{filtered.length} shown</span>
-      </div>
-      <DataTable
-        cols={["ID", "Type", "Document", "External Party", "Expiry", "Days left", "Risk", "Status", "Owner", "Action"]}
-        rows={filtered.map((r) => ({
-          key: r.recordId || r.id,
-          onClick: () => onOpen(r),
-          cells: [
-            r.id,
-            statusBadge(r.type),
-            r.name,
-            r.party,
-            <span className="mono" key="exp">{r.expiry}</span>,
-            r.daysRemaining ?? daysBetween(TODAY, r.expiry),
-            priBadge(r.risk),
-            statusBadge(docState(r)),
-            r.owner,
-            docLocked(r)
-              ? <>{statusBadge("Closed")} 🔒</>
-              : <button className="btn btn-outline btn-mini" type="button" onClick={(e) => { e.stopPropagation(); onRenew(r); }}>Renew</button>,
-          ],
-        }))}
-      />
-    </>
-  );
-}
-
 function RenewalCalendar({
   month, view, q, setQ, docs, onMonth, onView, onOpen, onRenew, onNew,
 }: {
@@ -882,30 +866,46 @@ function RenewalCalendar({
   onNew: () => void;
 }) {
   const db = useStore();
+  const landed = useRef(false);
   const [Y, M] = month.split("-").map(Number);
   const first = new Date(Y, M - 1, 1);
   const lead = first.getDay();
   const len = new Date(Y, M, 0).getDate();
   const label = first.toLocaleString("en-GB", { month: "long", year: "numeric" });
-  const inMonth = docs.filter((x) => x.expiry.startsWith(month));
+  const withDay = useMemo(() => docs.map((x) => ({ doc: x, day: dateOnly(x.expiry) })).filter((x) => x.day), [docs]);
+  const inMonth = withDay.filter((x) => x.day.startsWith(month));
+  const missingExpiry = docs.filter((x) => !dateOnly(x.expiry)).length;
   const expiring = docs.filter((x) => docState(x) === "Expiring");
+  const months = useMemo(() => [...new Set(withDay.map((x) => x.day.slice(0, 7)))].sort(), [withDay]);
+  const nextMonth = months.find((m) => m >= TODAY.slice(0, 7)) || months[months.length - 1] || "";
+  const nextLabel = nextMonth
+    ? new Date(Number(nextMonth.slice(0, 4)), Number(nextMonth.slice(5, 7)) - 1, 1).toLocaleString("en-GB", { month: "long", year: "numeric" })
+    : "";
+
+  useEffect(() => {
+    if (landed.current || !withDay.length) return;
+    landed.current = true;
+    if (withDay.some((x) => x.day.startsWith(month))) return;
+    if (nextMonth && nextMonth !== month) onMonth(nextMonth);
+  }, [withDay, month, nextMonth, onMonth]);
+
   const shift = (n: number) => {
     const d = new Date(Y, M - 1 + n, 1);
-    onMonth(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+    onMonth(`${d.getFullYear()}-${padCal(d.getMonth() + 1)}`);
   };
   const cells: ReactNode[] = [];
   for (let i = 0; i < lead; i++) cells.push(<div className="day empty" key={`e${i}`} />);
   for (let day = 1; day <= len; day++) {
-    const iso = `${month}-${String(day).padStart(2, "0")}`;
-    const ev = inMonth.filter((x) => x.expiry === iso);
+    const iso = `${month}-${padCal(day)}`;
+    const ev = inMonth.filter((x) => x.day === iso);
     cells.push(
       <div className={`day${ev.length ? " has" : ""}`} key={iso}>
         <div className="num">{day}</div>
-        {ev.map((x) => {
+        {ev.map(({ doc: x }) => {
           const t = daysBetween(TODAY, x.expiry);
           const k = t < 30 ? "bad" : t <= 90 ? "warn" : "ok";
           return (
-            <div className="ev" key={x.id} onClick={() => onOpen(x)}>
+            <div className="ev" key={x.recordId || x.id} onClick={() => onOpen(x)}>
               <i style={{ background: `var(--${k})` }} />
               <span>{x.name}</span>
             </div>
@@ -916,7 +916,7 @@ function RenewalCalendar({
   }
   return (
     <>
-      <PageHead title="Renewal Calendar" sub={`${inMonth.length} renewals in ${label} · ${expiring.length} due within 90 days`}>
+      <PageHead title="Renewal Calendar" sub={`${inMonth.length} renewals in ${label} · ${expiring.length} due within 90 days · ${docs.length} documents`}>
         <button className="btn btn-primary" type="button" onClick={onNew}>New Document</button>
       </PageHead>
       <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 14 }}>
@@ -930,6 +930,18 @@ function RenewalCalendar({
           <span style={{ marginLeft: 8 }}>&lt; 30 days · 30–90 · &gt; 90</span>
         </span>
       </div>
+      {view === "cal" && docs.length === 0 ? (
+        <div className="callout">No license or contract records are loaded. Create a document or check that <b>erc_licenseandcontract</b> is returning rows.</div>
+      ) : null}
+      {view === "cal" && docs.length > 0 && inMonth.length === 0 ? (
+        <div className="callout">
+          No expiries in <b>{label}</b>. {missingExpiry ? `${missingExpiry} record${missingExpiry === 1 ? "" : "s"} have no expiry date. ` : null}
+          {nextMonth && nextMonth !== month ? (
+            <button className="btn btn-outline btn-mini" type="button" onClick={() => onMonth(nextMonth)}>Go to {nextLabel}</button>
+          ) : null}
+          {" "}Use <b>List</b> to see all {docs.length} documents.
+        </div>
+      ) : null}
       {view === "cal" && (
         <div className="card cal">
           <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14 }}>
@@ -944,14 +956,11 @@ function RenewalCalendar({
         </div>
       )}
       {view === "list" && (
-        <DocTable
+        <LicenseTracker
           rows={[...docs].sort((a, b) => a.expiry.localeCompare(b.expiry))}
           q={q}
           setQ={setQ}
-          typeFilter="All"
-          statusFilter="All"
-          onType={() => undefined}
-          onStatus={() => undefined}
+          busy={false}
           onOpen={onOpen}
           onRenew={onRenew}
         />
@@ -1031,49 +1040,7 @@ function Modals({
     );
   }
   if (modal.kind === "doc") {
-    return (
-      <Overlay kind="modal" title="New Document" sub="License, contract or permit" onClose={onClose} footer={null}>
-        <DocForm onCancel={onClose} onSave={() => onDone("Document created")} />
-      </Overlay>
-    );
-  }
-  if (modal.kind === "simulate") {
-    return (
-      <Overlay kind="modal" title="Simulate Dataverse email" sub={`Filtered to a central mailbox`} onClose={onClose} footer={null}>
-        <form onSubmit={(e) => {
-          e.preventDefault();
-          const f = new FormData(e.currentTarget);
-          const replyTo = String(f.get("replyTo") || "");
-          void go("Email ingested from native email activity", () => simulateInboundEmail(String(f.get("from")), String(f.get("subj")), {
-            to: String(f.get("to") || MAILBOX_MAHA),
-            inReplyTo: replyTo || undefined,
-          }));
-        }}>
-          <div className="form">
-            <div className="wide"><label>From *</label><input name="from" type="email" required placeholder="licensing@mohp.gov.eg" /></div>
-            <div className="wide"><label>To (mailbox)</label>
-              <select name="to" defaultValue={MAILBOX_MAHA}>
-                {CENTRAL_MAILBOX_ADDRESSES.map((box) => <option key={box}>{box}</option>)}
-              </select>
-            </div>
-            <div className="wide"><label>Subject *</label><input name="subj" required placeholder="Facility licence follow-up" /></div>
-            <div className="wide"><label>Reply to existing thread</label>
-              <select name="replyTo">
-                <option value="">New thread — create Communication</option>
-                {db.comms.filter((c) => c.status !== "Closed").map((c) => (
-                  <option key={c.id} value={c.id}>{c.id} — {c.subj}</option>
-                ))}
-              </select>
-            </div>
-          </div>
-          <div className="note">If this is a new conversation index, the Create communication flow opens the transaction. Due Date and Is OverDue stay as formula columns on that record.</div>
-          <div className="df" style={{ margin: "16px -20px -20px" }}>
-            <button className="btn btn-primary" type="submit" disabled={busy}>Ingest email</button>
-            <button className="btn btn-ghost" type="button" onClick={onClose}>Cancel</button>
-          </div>
-        </form>
-      </Overlay>
-    );
+    return <LicenseCreateForm onCancel={onClose} onSave={() => onDone("Document created")} />;
   }
   if (modal.kind === "process") {
     const m = db.intake.find((x) => x.id === modal.mail.id) || modal.mail;
@@ -1271,73 +1238,24 @@ function Modals({
   if (modal.kind === "evidence") {
     const r = modal.comm;
     return (
-      <Overlay kind="modal" title="Upload evidence" sub={r.id} onClose={onClose} footer={null}>
-        <form onSubmit={(e) => {
-          e.preventDefault();
-          const name = String(new FormData(e.currentTarget).get("name") || "").trim();
-          if (!name) return onFail("File name is required");
-          addEvidence(r.id, name, ME);
-          onDone(`${name} archived against ${r.id}`);
-        }}>
-          <div className="form">
-            <div className="wide"><label>File name *</label><input name="name" required defaultValue="evidence.pdf" /></div>
-          </div>
-          <div className="note">This session stores the evidence name on the record. Attach the real file in Dataverse when the file column is added to Communication.</div>
-          <div className="df" style={{ margin: "16px -20px -20px" }}>
-            <button className="btn btn-primary" type="submit">Attach</button>
-            <button className="btn btn-ghost" type="button" onClick={onClose}>Cancel</button>
-          </div>
-        </form>
-      </Overlay>
+      <ArchiveUploadForm
+        busy={busy}
+        defaultCommId={r.recordId || r.id}
+        defaultType="Communication evidence"
+        onClose={onClose}
+        onSaved={onDone}
+        onFail={onFail}
+      />
     );
   }
   const x = db.docs.find((d) => d.id === modal.doc.id || d.recordId === modal.doc.recordId) || modal.doc;
-  const left = daysBetween(TODAY, x.expiry);
-  const locked = docLocked(x);
   return (
-    <Overlay
-      kind="modal"
-      title={x.name}
-      sub={`${x.id} · ${x.party}`}
+    <LicenseRecordForm
+      row={x}
+      busy={busy}
       onClose={onClose}
-      footer={locked ? (
-        <>
-          <button className="btn btn-outline" type="button" disabled={busy} onClick={() => void go("Renewal cycle reopened", () => reopenDoc(x.id))}>Reopen Renewal Cycle</button>
-          <button className="btn btn-ghost" type="button" onClick={onClose}>Close</button>
-        </>
-      ) : (
-        <>
-          <button className="btn btn-primary" type="button" disabled={busy} onClick={() => void go(`${x.name} renewed`, () => renewDoc(x.id))}>Renew (+12 months)</button>
-          <button className="btn btn-outline" type="button" disabled={busy} onClick={() => void go("Notification sent", () => sendRenewalNotice(x.id))}>Send Notification</button>
-          <button className="btn btn-outline" type="button" disabled={busy} onClick={() => void go("Completion recorded", () => completeCycle(x.id))}>Record Completion</button>
-          {!x.isEscalated && x.isOverdue ? (
-            <button className="btn btn-outline" type="button" disabled={busy} onClick={() => void go(`${x.id} escalated`, () => escalateLicense(x.id, "Manual escalation from document record", ME))}>Escalate</button>
-          ) : null}
-          <button className="btn btn-ghost" type="button" onClick={onClose}>Close</button>
-        </>
-      )}
-    >
-      <dl className="kv">
-        <dt>Document type</dt><dd>{statusBadge(x.type)}</dd>
-        <dt>Issuing authority</dt><dd>{x.auth || "—"}</dd>
-        <dt>Issue date</dt><dd className="mono">{x.issue}</dd>
-        <dt>Expiry date</dt><dd className="mono">{x.expiry}</dd>
-        <dt>Days to expiry</dt><dd>{x.daysRemaining ?? left}</dd>
-        <dt>Risk grade</dt><dd>{priBadge(x.risk)}</dd>
-        <dt>Status</dt><dd>{statusBadge(docState(x))}</dd>
-        <dt>Reminder threshold</dt><dd>{x.reminderThreshold || DEFAULT_REMINDER_THRESHOLD} days</dd>
-        <dt>Reminder sent</dt><dd>{flagBadge(!!x.reminderSent || !!x.notified, "Sent", "Not sent")}</dd>
-        <dt>Overdue</dt><dd>{flagBadge(!!x.isOverdue, "Overdue", "On Track")}</dd>
-        <dt>Escalated</dt><dd>{flagBadge(!!x.isEscalated, "Escalated", "Not Escalated")}</dd>
-        <dt>Owner</dt><dd>{x.owner || "—"}</dd>
-        <dt>Business unit</dt><dd>{x.bu || "—"}</dd>
-        <dt>Current renewal</dt><dd>{x.currentRenewalName || x.currentRenewalId || "—"}</dd>
-        <dt>Notification sent</dt><dd>{x.notified ? formatDateTime(x.notified) : <span className="badge b-warn">Not sent</span>}</dd>
-        <dt>Renewal completion</dt><dd>{x.done || "—"}</dd>
-      </dl>
-      {locked ? <div className="note"><b>This renewal cycle is closed and read only.</b> Completion recorded {x.done}.</div> : null}
-      <div className="note">Risk is calculated from days remaining. The reminder window is the threshold on the record (default {DEFAULT_REMINDER_THRESHOLD} days). <b>Renew</b> extends expiry by twelve months and closes the open renewal task.</div>
-    </Overlay>
+      onSaved={onFail}
+    />
   );
 }
 
@@ -1448,60 +1366,6 @@ function CommForm({ onCancel, onSave }: { onCancel: () => void; onSave: () => vo
       <div className="note">Due Date and Is OverDue are formula columns (Created On + 2 hours). The automatic flow reads that column; this app does not calculate or write it.</div>
       <div className="df" style={{ margin: "16px -20px -20px" }}>
         <button className="btn btn-primary" type="submit" disabled={busy}>Create Record</button>
-        <button className="btn btn-ghost" type="button" onClick={onCancel}>Cancel</button>
-      </div>
-    </form>
-  );
-}
-
-function DocForm({ onCancel, onSave }: { onCancel: () => void; onSave: () => void }) {
-  const db = useStore();
-  const [busy, setBusy] = useState(false);
-  async function submit(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    const f = new FormData(e.currentTarget);
-    setBusy(true);
-    try {
-      await addDoc({
-        type: String(f.get("type")) as License["type"],
-        name: String(f.get("name")),
-        party: String(f.get("party")),
-        auth: String(f.get("auth")),
-        issue: String(f.get("issue")),
-        expiry: String(f.get("expiry")),
-        risk: "Medium",
-        reminderThreshold: Number(f.get("threshold")) || DEFAULT_REMINDER_THRESHOLD,
-        owner: String(f.get("owner")),
-        bu: db.businessUnits.find((u) => u.id === String(f.get("bu")))?.name || String(f.get("bu") || ""),
-        buId: String(f.get("bu") || "") || undefined,
-      });
-      onSave();
-    } finally {
-      setBusy(false);
-    }
-  }
-  return (
-    <form onSubmit={submit}>
-      <div className="form">
-        <div className="wide"><label>Document name *</label><input name="name" required /></div>
-        <div><label>Type *</label><select name="type"><option>License</option><option>Contract</option><option>Permit</option></select></div>
-        <div><label>Reminder threshold (days)</label><input name="threshold" type="number" min={1} defaultValue={DEFAULT_REMINDER_THRESHOLD} /></div>
-        <div><label>External party *</label><select name="party">{db.parties.map((p) => <option key={p.id}>{p.name}</option>)}</select></div>
-        <div><label>Issuing authority</label><input name="auth" /></div>
-        <div><label>Issue date *</label><input name="issue" type="date" defaultValue={TODAY} required /></div>
-        <div><label>Expiry date *</label><input name="expiry" type="date" required /></div>
-        <div><label>Owner</label><input name="owner" defaultValue={ME} /></div>
-        <div><label>Business unit</label>
-          <select name="bu">
-            {(db.businessUnits.length ? db.businessUnits : BUS.map((name) => ({ id: name, name }))).map((u) => (
-              <option key={u.id} value={u.id}>{u.name}</option>
-            ))}
-          </select>
-        </div>
-      </div>
-      <div className="note">Days remaining and risk are calculated from the expiry date. If the document is already inside the reminder threshold, a renewal task and notification are created immediately.</div>
-      <div className="df" style={{ margin: "16px -20px -20px" }}>
-        <button className="btn btn-primary" type="submit" disabled={busy}>Create Document</button>
         <button className="btn btn-ghost" type="button" onClick={onCancel}>Cancel</button>
       </div>
     </form>

@@ -1,4 +1,4 @@
-import { MAILBOX_TEST, type Communication, type IntakeEmail, type License, type Party, type SlaRule, type Store } from "./types";
+import { MAILBOX_TEST, type ArchiveDoc, type AuditRow, type Communication, type IntakeEmail, type License, type Party, type SlaRule, type Store } from "./types";
 import { dueFromCreated } from "./communicationLogic";
 
 const sla = (id: string, category: SlaRule["category"], priority: SlaRule["priority"], ackHours: number, resolveDays: number, basis: SlaRule["basis"]): SlaRule =>
@@ -38,8 +38,11 @@ const d = (
   risk: License["risk"], owner: string, bu: string, extra: Partial<License> = {}
 ): License => ({
   id, recordId: id, type, name, party, auth, issue, expiry, risk, owner, bu,
+  documentNumber: extra.documentNumber ?? id,
   reminderThreshold: extra.reminderThreshold ?? 120,
   reminderSent: extra.reminderSent ?? !!extra.notified,
+  active: extra.active ?? true,
+  renewalStatus: extra.renewalStatus ?? (extra.status === "Renewed" || extra.done ? "Renewed" : extra.notified ? "In Progress" : "Not Started"),
   ...extra,
 });
 
@@ -60,6 +63,7 @@ export const SEED: Store = {
   source: "local",
   ready: true,
   businessUnits: BU.map((name, i) => ({ id: `bu-${i}`, name })),
+  departments: [],
   sla: [
     sla("S1", "Government", "Critical", 4, 2, "Working days"),
     sla("S2", "Government", "High", 8, 5, "Working days"),
@@ -123,5 +127,15 @@ export const SEED: Store = {
     { id: "F3", name: "Facility operating licence — Smouha 2026.pdf", rel: "COM-2026-0409", date: "2026-08-12", by: "Ahmed Salah" },
     { id: "F4", name: "Legal notice CASE-2026-017 — receipt proof.pdf", rel: "COM-2026-0408", date: "2026-08-11", by: "Heba Kamal" },
   ],
+  archives: [
+    { id: "F1", recordId: "F1", name: "NHIA re-accreditation response letter.pdf", type: "Communication evidence", communicationId: "COM-2026-0412", communicationName: "COM-2026-0412", uploadedBy: "Ahmed Salah", uploadedOn: "2026-08-15", fileName: "NHIA re-accreditation response letter.pdf" },
+    { id: "F2", recordId: "F2", name: "EDA inspection findings — signed CAP.pdf", type: "Communication evidence", communicationId: "COM-2026-0411", communicationName: "COM-2026-0411", uploadedBy: "Mona ElSayed", uploadedOn: "2026-08-14", fileName: "EDA inspection findings — signed CAP.pdf" },
+    { id: "F3", recordId: "F3", name: "Facility operating licence — Smouha 2026.pdf", type: "License document", communicationId: "COM-2026-0409", communicationName: "COM-2026-0409", licenseName: "Facility Operating Licence — Smouha", uploadedBy: "Ahmed Salah", uploadedOn: "2026-08-12", fileName: "Facility operating licence — Smouha 2026.pdf" },
+    { id: "F4", recordId: "F4", name: "Legal notice CASE-2026-017 — receipt proof.pdf", type: "Communication evidence", communicationId: "COM-2026-0408", communicationName: "COM-2026-0408", uploadedBy: "Heba Kamal", uploadedOn: "2026-08-11", fileName: "Legal notice CASE-2026-017 — receipt proof.pdf" },
+  ] as ArchiveDoc[],
+  audits: [
+    { id: "A1", recordId: "A1", name: "Created", action: "Created", channel: "Email", communicationId: "COM-2026-0412", communicationName: "COM-2026-0412", details: "Ingested from mailbox", performedBy: "System", performedOn: "2026-08-13T10:03:00" },
+    { id: "A2", recordId: "A2", name: "Escalated", action: "Escalated", channel: "System", communicationId: "COM-2026-0411", communicationName: "COM-2026-0411", details: "Automatic escalation", performedBy: "System", performedOn: "2026-08-12T17:40:00" },
+  ] as AuditRow[],
   threadByComm: {},
 };

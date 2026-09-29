@@ -68,9 +68,9 @@ export function statusBadge(status: string) {
   return <span className={`badge ${map[status] || "b-gray"}`}>{status}</span>;
 }
 
-export function FilterField({ label, children }: { label: string; children: ReactNode }) {
+export function FilterField({ label, children, className }: { label: string; children: ReactNode; className?: string }) {
   return (
-    <label className="ffld">
+    <label className={`ffld${className ? ` ${className}` : ""}`}>
       <span>{label}</span>
       {children}
     </label>
@@ -92,6 +92,9 @@ export function OrgFilterFields({
   onBu: (v: string) => void;
   onDept: (v: string) => void;
 }) {
+  const deptOptions = dept !== "All" && !departments.some((name) => name.toLowerCase() === dept.toLowerCase())
+    ? [dept, ...departments]
+    : departments;
   return (
     <>
       <FilterField label="Business Unit">
@@ -103,7 +106,7 @@ export function OrgFilterFields({
       <FilterField label="Department">
         <select value={dept} onChange={(e) => onDept(e.target.value)}>
           <option value="All">All</option>
-          {departments.map((name) => <option key={name} value={name}>{name}</option>)}
+          {deptOptions.map((name) => <option key={name} value={name}>{name}</option>)}
         </select>
       </FilterField>
     </>

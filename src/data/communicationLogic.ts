@@ -4,14 +4,19 @@ import { FLOWS, matchesAutoEscalationFilter } from "./flows";
 /** Prototype stand-in only. Live overdue is the Dataverse formula column erc_isoverdue (Created On + 2 hours). */
 export const OVERDUE_HOURS = 2;
 
+export function yesNoChoice(value?: boolean): 0 | 1 {
+  return value ? 1 : 0;
+}
+
 export function extraCommFields(row: Communication) {
   return {
     erc_description: row.description,
     erc_emailsubject: row.emailSubject || row.subj,
-    erc_isescalated: row.isEscalated,
-    erc_ismanuallyescalated: row.isManuallyEscalated,
+    erc_isescalated: yesNoChoice(row.isEscalated),
+    erc_ismanuallyescalated: yesNoChoice(row.isManuallyEscalated),
     erc_escalationreason: row.escalationReason,
     erc_closurecomment: row.closureComment,
+    erc_caserefrence: row.caseRef || undefined,
   };
 }
 

@@ -78,6 +78,16 @@
           "entitySetName": "erc_notifications",
           "logicalName": "erc_notification",
           "isHidden": false
+        },
+        "documentarchives": {
+          "entitySetName": "erc_documentarchives",
+          "logicalName": "erc_documentarchive",
+          "isHidden": false
+        },
+        "communicationaudits": {
+          "entitySetName": "erc_communicationaudits",
+          "logicalName": "erc_communicationaudit",
+          "isHidden": false
         }
       },
       "environmentVariableName": ""

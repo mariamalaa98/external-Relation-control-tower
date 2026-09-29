@@ -55,12 +55,18 @@ export function applyLicenseFormulas(row: License, today = todayIso()): License 
   const closed = isLicenseClosed(row);
   const overdue = !closed && days < 0;
   const status = closed ? "Renewed" : overdue ? "Expired" : row.status === "Expired" ? undefined : row.status;
+  let renewalStatus = row.renewalStatus || "Not Started";
+  if (closed) renewalStatus = "Renewed";
+  else if (overdue) renewalStatus = "Expired";
+  else if (renewalStatus === "Expired" || renewalStatus === "Renewed") renewalStatus = "In Progress";
   return {
     ...row,
     daysRemaining: days,
     risk: closed ? row.risk : riskFromDays(days),
     isOverdue: overdue,
     status,
+    renewalStatus,
+    active: row.active !== false,
   };
 }
 

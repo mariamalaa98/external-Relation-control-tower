@@ -30,6 +30,8 @@ export const COMM_STATUSES = ["In Progress", "Closed"] as const;
 export type SlaState = "Within" | "At Risk" | "Breached";
 export type DocType = "License" | "Contract" | "Permit";
 export type DocRisk = "Critical" | "High" | "Medium" | "Low";
+export const LICENSE_RENEWAL_STATUSES = ["Not Started", "In Progress", "Submitted", "Renewed", "Expired"] as const;
+export type LicenseRenewalStatus = (typeof LICENSE_RENEWAL_STATUSES)[number];
 export type IntakeStatus = "New" | "In Review" | "Routed";
 export type DataSource = "dataverse" | "local";
 
@@ -45,6 +47,7 @@ export type SlaRule = {
 };
 
 export type BusinessUnitRef = { id: string; name: string };
+export type DepartmentRef = { id: string; name: string; companyId?: string; companyName?: string };
 
 export type Party = {
   id: string;
@@ -71,6 +74,44 @@ export type EvidenceFile = {
   by: string;
 };
 
+export const ARCHIVE_TYPES = ["Communication evidence", "License document", "Other"] as const;
+export type ArchiveType = (typeof ARCHIVE_TYPES)[number];
+
+export const AUDIT_ACTIONS = ["Created", "Routed", "Category set", "Responded", "Escalated", "Closed", "Reopened", "Evidence added"] as const;
+export type AuditAction = (typeof AUDIT_ACTIONS)[number];
+export const AUDIT_CHANNELS = ["Email", "Official letter", "Portal", "System"] as const;
+export type AuditChannel = (typeof AUDIT_CHANNELS)[number];
+
+export type ArchiveDoc = {
+  id: string;
+  recordId: string;
+  name: string;
+  type: ArchiveType;
+  notes?: string;
+  fileName?: string;
+  communicationId?: string;
+  communicationName?: string;
+  licenseId?: string;
+  licenseName?: string;
+  uploadedBy?: string;
+  uploadedOn?: string;
+};
+
+export type AuditRow = {
+  id: string;
+  recordId: string;
+  name: string;
+  action: AuditAction;
+  channel: AuditChannel;
+  communicationId?: string;
+  communicationName?: string;
+  details?: string;
+  oldValue?: string;
+  newValue?: string;
+  performedBy?: string;
+  performedOn?: string;
+};
+
 export type Communication = {
   id: string;
   recordId: string;
@@ -88,7 +129,9 @@ export type Communication = {
   due: string;
   status: CommStatus;
   bu: string;
+  buId?: string;
   department?: string;
+  departmentId?: string;
   caseRef?: string;
   closed?: string;
   closedBy?: string;
@@ -143,17 +186,27 @@ export type License = {
   recordId: string;
   type: DocType;
   name: string;
+  documentNumber?: string;
   party: string;
   partyId?: string;
   auth: string;
+  issuingAuthorityId?: string;
   issue: string;
   expiry: string;
   risk: DocRisk;
   owner: string;
+  ownerId?: string;
   bu: string;
   buId?: string;
   department?: string;
+  departmentId?: string;
+  active?: boolean;
   status?: string;
+  renewalStatus?: LicenseRenewalStatus;
+  renewalNotes?: string;
+  renewalSlaDate?: string;
+  documentUrl?: string;
+  currentDocumentName?: string;
   notified?: string;
   done?: string;
   daysRemaining?: number;
@@ -238,8 +291,11 @@ export type Store = {
   docs: License[];
   renewals: Renewal[];
   notices: Notice[];
+  archives: ArchiveDoc[];
+  audits: AuditRow[];
   intake: IntakeEmail[];
   files: EvidenceFile[];
   threadByComm: Record<string, ThreadEmail[]>;
   businessUnits: BusinessUnitRef[];
+  departments: DepartmentRef[];
 };

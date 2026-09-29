@@ -8,10 +8,14 @@ import {
 import {
   canManualEscalate,
   commLocked,
+  communicationDeepLink,
+  copyText,
   formatDateTime,
+  downloadArchiveFile,
   loadCommThread,
   loadEmailAttachmentFile,
   overdueLabel,
+  sameId,
   saveComm,
   threadEmails,
   useStore,
@@ -22,6 +26,7 @@ import {
   decodeText,
   downloadBytes,
   formatBytes,
+  mimeFromFileName,
   previewKind,
 } from "../data/emailAttachments";
 import { Overlay, FilterField, catBadge, flagBadge, priBadge, statusBadge } from "./widgets";
@@ -33,6 +38,7 @@ export function CommRecordForm({
   onCloseRec,
   onReopen,
   onEscalate,
+  onEvidence,
   onSaved,
 }: {
   row: Communication;
@@ -41,11 +47,22 @@ export function CommRecordForm({
   onCloseRec: () => void;
   onReopen: () => void;
   onEscalate: () => void;
+  onEvidence?: () => void;
   onSaved: (msg: string) => void;
 }) {
   const db = useStore();
   const emails = threadEmails(row);
   const locked = commLocked(row);
+  const archives = db.archives.filter((a) => sameId(a.communicationId, row.recordId) || a.communicationId === row.id);
+
+  async function downloadArchive(id: string, name: string) {
+    try {
+      const file = await downloadArchiveFile(id);
+      downloadBytes(file.bytes, file.name || name, mimeFromFileName(file.name || name));
+    } catch (err) {
+      onSaved(err instanceof Error ? err.message : "Could not download the file.");
+    }
+  }
   const [saving, setBusy] = useState(false);
   const [tab, setTab] = useState<"general" | "email">("general");
   const [threadBusy, setThreadBusy] = useState(false);
@@ -56,6 +73,7 @@ export function CommRecordForm({
   const subjectFromTable = !!(row.emailSubject || row.subj);
   const descFromTable = !!row.description?.trim();
   const slaFromTable = !!row.slaId;
+  const recordLink = communicationDeepLink(row.recordId);
 
   useEffect(() => {
     setThreadBusy(true);
@@ -77,6 +95,7 @@ export function CommRecordForm({
         slaId,
         slaName: slaFromTable ? row.slaName : (db.sla.find((s) => s.id === slaId)?.name || row.slaName),
         cat: partyId || catFromTable ? row.cat : (String(f.get("cat") || row.cat) as Communication["cat"]),
+        caseRef: String(f.get("caseRef") || ""),
       });
       onSaved("Communication saved");
     } finally {
@@ -114,6 +133,15 @@ export function CommRecordForm({
     }
   }
 
+  async function copyRecordLink() {
+    if (!recordLink) {
+      onSaved("No record link for this environment");
+      return;
+    }
+    const ok = await copyText(recordLink);
+    onSaved(ok ? "Link copied" : recordLink);
+  }
+
   return (
     <Overlay
       kind="drawer"
@@ -142,7 +170,7 @@ export function CommRecordForm({
         {priBadge(row.pri)}
         {statusBadge(row.status)}
         {flagBadge(row.isOverdue, "Overdue", "On Track")}
-        {flagBadge(row.isEscalated, "Escalated", "Not Escalated")}
+        {row.isManuallyEscalated ? flagBadge(true, "Manually Escalated", "Not Escalated") : null}
       </div>
       <div className="tabs">
         <button className={tab === "general" ? "on" : ""} type="button" onClick={() => setTab("general")}>General</button>
@@ -154,10 +182,16 @@ export function CommRecordForm({
         <EmailThreadPanel emails={emails} loading={threadBusy} />
       ) : null}
       <div hidden={tab !== "general"}>
-          <form id="comm-form" className="mdf" onSubmit={save} key={`${row.id}-${row.partyId || ""}-${row.party}-${row.cat}-${row.categoryAssigned}-${row.isEscalated}-${row.status}-${row.closed || ""}`}>
+          <form id="comm-form" className="mdf" onSubmit={save} key={`${row.id}-${row.partyId || ""}-${row.party}-${row.cat}-${row.categoryAssigned}-${row.isManuallyEscalated}-${row.status}-${row.closed || ""}`}>
             <div className="mdf-sec">Identity</div>
             <Field label="Owner">
               <div className="lookup">{row.owner || "—"}</div>
+            </Field>
+            <Field label="Record link" wide>
+              <div className="deeplink-row">
+                <input readOnly value={recordLink} />
+                <button className="btn btn-outline" type="button" onClick={() => void copyRecordLink()}>Copy</button>
+              </div>
             </Field>
             <Field label="External Party">
               {partyFromTable ? (
@@ -229,6 +263,9 @@ export function CommRecordForm({
                 </select>
               )}
             </Field>
+            <Field label="Case reference">
+              <input name="caseRef" defaultValue={row.caseRef || ""} disabled={locked} maxLength={100} />
+            </Field>
             <Field label="Due Date">
               <input readOnly value={formatDateTime(row.due)} />
             </Field>
@@ -236,20 +273,17 @@ export function CommRecordForm({
               {flagBadge(row.isOverdue, overdueLabel(true), overdueLabel(false))}
             </Field>
 
-            <div className="mdf-sec">Escalation</div>
-            <Field label="Is Escalated" required>
-              {flagBadge(row.isEscalated, "Escalated", "Not Escalated")}
-              {row.isEscalated ? <div className="hint">Locked — escalate can run only once.</div> : null}
-            </Field>
-            <Field label="Is Automatically Escalated">
-              <div className="readonly-val">{yesNo(row.isAutomaticallyEscalated)}</div>
-            </Field>
-            <Field label="Escalated By">
-              <div className="lookup">{row.escalatedBy || "—"}</div>
-            </Field>
-            <Field label="Escalation Reason" wide>
-              <input readOnly value={row.escalationReason || ""} placeholder="—" />
-            </Field>
+            {row.isManuallyEscalated ? (
+              <>
+                <div className="mdf-sec">Escalation</div>
+                <Field label="Escalated By">
+                  <div className="lookup">{row.escalatedBy || "—"}</div>
+                </Field>
+                <Field label="Escalation Reason" wide>
+                  <input readOnly value={row.escalationReason || ""} placeholder="—" />
+                </Field>
+              </>
+            ) : null}
 
             <div className="mdf-sec">Closure</div>
             <Field label="Closed By">
@@ -262,6 +296,35 @@ export function CommRecordForm({
               <textarea readOnly rows={2} value={row.closureComment || ""} placeholder="Entered when you escalate or close" />
             </Field>
           </form>
+          <h2 className="sec">Document evidence ({archives.length})</h2>
+          {archives.length ? (
+            <ul className="tl">
+              {archives.map((file) => (
+                <li key={file.recordId || file.id}>
+                  <b>{file.name}</b>
+                  <span>
+                    {file.type}
+                    {file.uploadedOn ? ` · ${formatDateTime(file.uploadedOn)}` : ""}
+                    {file.fileName ? (
+                      <>
+                        {" · "}
+                        <button className="btn btn-ghost" type="button" onClick={() => void downloadArchive(file.id, file.fileName || file.name)}>
+                          Download
+                        </button>
+                      </>
+                    ) : null}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <div className="note">No files on Document Archive for this record yet.</div>
+          )}
+          {onEvidence && !locked ? (
+            <div className="df" style={{ margin: "8px 0 16px" }}>
+              <button className="btn btn-outline" type="button" disabled={busy || saving} onClick={onEvidence}>Upload evidence</button>
+            </div>
+          ) : null}
           <h2 className="sec">Timeline</h2>
           <ul className="tl">
             {row.log?.map((e, i) => (
@@ -527,8 +590,8 @@ export function EscalationCenter({
         </div>
       </div>
       <div className="filters">
-        <FilterField label="Search">
-          <input placeholder="Search escalated or overdue communications" value={q} onChange={(e) => setQ(e.target.value)} />
+        <FilterField label="Search" className="ffld-search">
+          <input type="search" placeholder="Search escalated or overdue" value={q} onChange={(e) => setQ(e.target.value)} />
         </FilterField>
         <button className="btn btn-primary" type="button" disabled={busy} onClick={onRunAuto}>
           {db.source === "dataverse" ? "Refresh from auto flow" : "Run automatic escalation"}

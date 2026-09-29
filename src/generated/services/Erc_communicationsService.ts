@@ -27,7 +27,7 @@ export class Erc_communicationsService {
   public static async update(id: string, changedFields: Partial<Omit<Erc_communicationsBase, 'erc_communicationid'>>): Promise<IOperationResult<Erc_communications>> {
     const result = await Erc_communicationsService.client.updateRecordAsync<Partial<Omit<Erc_communicationsBase, 'erc_communicationid'>>, Erc_communications>(
       Erc_communicationsService.dataSourceName,
-      id,
+      id.toString(),
       changedFields
     );
     return result;
@@ -36,13 +36,13 @@ export class Erc_communicationsService {
   public static async delete(id: string): Promise<void> {
     await Erc_communicationsService.client.deleteRecordAsync(
       Erc_communicationsService.dataSourceName,
-      id);
+      id.toString());
   }
 
   public static async get(id: string, options?: IGetOptions): Promise<IOperationResult<Erc_communications>> {
     const result = await Erc_communicationsService.client.retrieveRecordAsync<Erc_communications>(
       Erc_communicationsService.dataSourceName,
-      id,
+      id.toString(),
       options
     );
     return result;

@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { SEED } from "./seed";
-import type { BusinessUnitRef, Category, CommStatus, Communication, EmailAttachment, EvidenceFile, IntakeEmail, License, Notice, NoticeType, Party, Priority, Renewal, SlaRule, Store, ThreadEmail } from "./types";
+import type { ArchiveDoc, ArchiveType, AuditAction, AuditChannel, AuditRow, BusinessUnitRef, Category, CommStatus, Communication, DepartmentRef, EmailAttachment, EvidenceFile, IntakeEmail, License, Notice, NoticeType, Party, Priority, Renewal, SlaRule, Store, ThreadEmail } from "./types";
 import {
   addDays,
   asPriority,
@@ -15,7 +15,15 @@ import {
   isoDateTime,
   lifecycleChoice,
   lookupDisplay,
+  COMM_ACTIVE_STATUSCODE_FILTER,
+  isActiveCommunicationRow,
+  archiveTypeChoice,
+  auditActionChoice,
+  auditChannelChoice,
+  mapArchive,
+  mapAudit,
   mapComm,
+  mapDepartment,
   mapDoc,
   mapNotice,
   mapParty,
@@ -58,6 +66,7 @@ import {
   dueFromCreated,
   extraCommFields,
   findThread,
+  yesNoChoice,
   formatDateTime,
   isCentralMailbox,
   conversationPrefix,
@@ -70,6 +79,7 @@ import { MAILBOX_MAHA, MAILBOX_PROD, CENTRAL_MAILBOX_ADDRESSES } from "./types";
 import { EmailsService } from "../generated/services/EmailsService";
 import { ActivitypartiesService } from "../generated/services/ActivitypartiesService";
 import { BusinessunitsService } from "../generated/services/BusinessunitsService";
+import { Cr603_chklst_departmentsesService } from "../generated/services/Cr603_chklst_departmentsesService";
 import { CENTRAL_MAILBOX_PARTY_ID, FLOWS, TO_RECIPIENT } from "./flows";
 import type { Emails } from "../generated/models/EmailsModel";
 import { Erc_communicationsService } from "../generated/services/Erc_communicationsService";
@@ -78,7 +88,11 @@ import { Erc_licenseandcontractsService } from "../generated/services/Erc_licens
 import { Erc_notificationsService } from "../generated/services/Erc_notificationsService";
 import { Erc_renewalsService } from "../generated/services/Erc_renewalsService";
 import { Erc_sla2sService } from "../generated/services/Erc_sla2sService";
+import { Erc_documentarchivesService } from "../generated/services/Erc_documentarchivesService";
+import { Erc_communicationauditsService } from "../generated/services/Erc_communicationauditsService";
 import { SystemusersService } from "../generated/services/SystemusersService";
+import type { Erc_documentarchivesBase } from "../generated/models/Erc_documentarchivesModel";
+import type { Erc_communicationauditsBase } from "../generated/models/Erc_communicationauditsModel";
 import { TeamsService } from "../generated/services/TeamsService";
 import type { Erc_communicationsBase } from "../generated/models/Erc_communicationsModel";
 import type { Erc_externalpartiesBase } from "../generated/models/Erc_externalpartiesModel";
@@ -96,10 +110,13 @@ let store: Store = {
   docs: [],
   renewals: [],
   notices: [],
+  archives: [],
+  audits: [],
   intake: [],
   files: [],
   threadByComm: {},
   businessUnits: [],
+  departments: [],
   warnings: [],
 };
 const listeners = new Set<() => void>();
@@ -178,6 +195,56 @@ function replaceDoc(next: License) {
   return next;
 }
 
+function findDoc(id: string) {
+  return store.docs.find((d) => d.id === id || d.recordId === id || sameId(d.recordId, id) || sameId(d.id, id));
+}
+
+function licenseLookupBinds(row: License): Partial<Erc_licenseandcontractsBase> {
+  return {
+    ...(row.partyId && isGuid(row.partyId) ? { "erc_ExternalParty@odata.bind": `/erc_externalparties(${row.partyId})` } : {}),
+    ...(row.issuingAuthorityId && isGuid(row.issuingAuthorityId) ? { "erc_IssuingAuthority@odata.bind": `/erc_externalparties(${row.issuingAuthorityId})` } : {}),
+    ...(row.buId && isGuid(row.buId) ? { "erc_BusinessUnit@odata.bind": `/businessunits(${row.buId})` } : {}),
+    ...(row.departmentId && isGuid(row.departmentId) ? { "erc_Department@odata.bind": `/cr603_chklst_departmentses(${row.departmentId})` } : {}),
+  };
+}
+
+function licenseWritableFields(row: License): Partial<Erc_licenseandcontractsBase> {
+  return {
+    erc_licenseandcontract1: row.name,
+    erc_documentnumber: clip100(row.documentNumber || row.id),
+    erc_documenttype: docTypeChoice(row.type),
+    erc_expirydate: isoDateTime(row.expiry) || row.expiry,
+    erc_issuedate: isoDateTime(row.issue) || undefined,
+    erc_risklevel: riskChoice(row.risk),
+    erc_renewalstatus: renewalChoice(row.renewalStatus || "Not Started"),
+    erc_active: row.active !== false,
+    erc_daysremaining: row.daysRemaining,
+    erc_reminderthreshold: thresholdOf(row),
+    erc_remindersent: !!row.reminderSent,
+    erc_isescalated: !!row.isEscalated,
+    erc_escalationreason: clip100(row.escalationReason || ""),
+    erc_renewalnotes: clip100(row.renewalNotes || ""),
+    erc_documenturl: clip100(row.documentUrl || ""),
+    ...(row.notified ? { erc_lastnotified: isoDateTime(dateOnly(row.notified)) } : {}),
+    ...(row.done ? { erc_renewalcompleted: isoDateTime(row.done) } : {}),
+    ...licenseLookupBinds(row),
+  };
+}
+
+async function docFromDataverse(id: string, fallback: License): Promise<License> {
+  try {
+    const got = await Erc_licenseandcontractsService.get(id);
+    if (got.data) {
+      return withOrgNames(applyLicenseFormulas({
+        ...fallback,
+        ...mapDoc(got.data),
+        recordId: got.data.erc_licenseandcontractid,
+      }));
+    }
+  } catch { /* create/update response may omit formula columns */ }
+  return applyLicenseFormulas({ ...fallback, recordId: id });
+}
+
 async function userIdByName(name: string) {
   const trimmed = name.trim();
   if (!trimmed) return undefined;
@@ -190,8 +257,153 @@ async function userIdByName(name: string) {
   }
 }
 
-function log(row: Communication, title: string, meta: string) {
+function filesFromArchives(archives: ArchiveDoc[]): EvidenceFile[] {
+  return archives
+    .filter((row) => row.communicationId)
+    .map((row) => ({
+      id: row.id,
+      name: row.fileName || row.name,
+      rel: row.communicationId || "",
+      date: dateOnly(row.uploadedOn) || todayIso(),
+      by: row.uploadedBy || "",
+    }));
+}
+
+function auditKey(row: Pick<AuditRow, "communicationId" | "action">) {
+  return `${String(row.communicationId || "").replace(/[{}]/g, "").toLowerCase()}|${row.action}`;
+}
+
+function auditsFromCommunications(comms: Communication[]): AuditRow[] {
+  const rows: AuditRow[] = [];
+  const seen = new Set<string>();
+  const add = (comm: Communication, action: AuditAction, when?: string, details?: string, by?: string, channel: AuditChannel = "System") => {
+    const entry: AuditRow = {
+      id: `derived-${comm.recordId || comm.id}-${action}`,
+      recordId: "",
+      name: action,
+      action,
+      channel,
+      communicationId: comm.recordId || comm.id,
+      communicationName: comm.id,
+      details: clip100(details || ""),
+      performedBy: by,
+      performedOn: when || comm.createdOn || comm.rec,
+    };
+    const key = auditKey(entry);
+    if (seen.has(key)) return;
+    seen.add(key);
+    rows.push(entry);
+  };
+  for (const comm of comms) {
+    add(comm, "Created", comm.createdOn || comm.rec, comm.emailSubject || comm.subj, "System", comm.type === "Inbound" ? "Email" : "System");
+    if (comm.categoryAssigned || comm.cat) add(comm, "Category set", comm.createdOn, comm.cat);
+    if (comm.resp || comm.respAction) add(comm, "Responded", comm.resp, comm.respAction, comm.owner);
+    if (comm.isEscalated || comm.isManuallyEscalated || comm.isAutomaticallyEscalated) {
+      add(comm, "Escalated", comm.createdOn, comm.escalationReason, comm.escalatedBy || "System");
+    }
+    if (comm.status === "Closed") add(comm, "Closed", comm.closed, comm.closureComment, comm.closedBy);
+    for (const entry of comm.log || []) {
+      const title = entry.title.toLowerCase();
+      if (title.includes("evidence")) add(comm, "Evidence added", undefined, entry.meta, comm.owner);
+      else if (title.includes("reopen")) add(comm, "Reopened", undefined, entry.meta, comm.owner);
+      else if (title.includes("rout") || title.includes("attach")) add(comm, "Routed", undefined, entry.meta, "System", "Email");
+    }
+  }
+  return rows;
+}
+
+function mergeAudits(fromTable: AuditRow[], fromComms: Communication[]) {
+  const seen = new Set(fromTable.map(auditKey));
+  const derived = auditsFromCommunications(fromComms).filter((row) => !seen.has(auditKey(row)));
+  return [...fromTable, ...derived].sort((a, b) => String(b.performedOn || "").localeCompare(String(a.performedOn || "")));
+}
+
+function applyArchiveMeta(comms: Communication[], archives: ArchiveDoc[], audits: AuditRow[]): Communication[] {
+  return comms.map((row) => {
+    const files = archives.filter((a) => sameId(a.communicationId, row.recordId) || a.communicationId === row.id);
+    const logs = audits
+      .filter((a) => sameId(a.communicationId, row.recordId) || a.communicationId === row.id)
+      .sort((a, b) => String(a.performedOn || "").localeCompare(String(b.performedOn || "")));
+    return {
+      ...row,
+      ev: files.length || row.ev,
+      log: logs.length
+        ? logs.map((a) => ({ title: a.action, meta: [formatDateTime(a.performedOn), a.performedBy, a.details].filter(Boolean).join(" — ") }))
+        : row.log,
+    };
+  });
+}
+
+async function persistAudit(row: Communication, title: string, meta: string, channel: AuditChannel = "System") {
+  const entry: AuditRow = {
+    id: `A${Date.now()}`,
+    recordId: "",
+    name: clip100(title),
+    action: title.toLowerCase().includes("evidence") ? "Evidence added"
+      : title.toLowerCase().includes("reopen") ? "Reopened"
+      : title.toLowerCase().includes("clos") ? "Closed"
+      : title.toLowerCase().includes("escal") ? "Escalated"
+      : title.toLowerCase().includes("categor") ? "Category set"
+      : title.toLowerCase().includes("rout") || title.toLowerCase().includes("attach") ? "Routed"
+      : title.toLowerCase().includes("creat") ? "Created"
+      : "Responded",
+    channel,
+    communicationId: row.recordId || row.id,
+    communicationName: row.id,
+    details: clip100(meta),
+    performedBy: ME,
+    performedOn: new Date().toISOString(),
+  };
+  store = { ...store, audits: [entry, ...store.audits] };
+  emit();
+  if (store.source !== "dataverse" || !isGuid(row.recordId)) return;
+  try {
+    const base = {
+      erc_name: clip100(title),
+      erc_action: auditActionChoice(entry.action) as Erc_communicationauditsBase["erc_action"],
+      erc_channel: auditChannelChoice(channel) as Erc_communicationauditsBase["erc_channel"],
+      erc_details: clip100(meta),
+      erc_performedon: entry.performedOn,
+    };
+    const attempts = [
+      { ...base, "erc_Communication@odata.bind": `/erc_communications(${row.recordId})` },
+      base,
+    ];
+    let id = "";
+    let lastErr: unknown;
+    for (const payload of attempts) {
+      try {
+        const created = await Erc_communicationauditsService.create(payload as Omit<Erc_communicationauditsBase, "erc_communicationauditid">);
+        if (created.data?.erc_communicationauditid) {
+          id = created.data.erc_communicationauditid;
+          break;
+        }
+        lastErr = created.error || "Create returned no id";
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+    if (id) {
+      store = {
+        ...store,
+        audits: store.audits.map((a) => a.id === entry.id ? { ...entry, id, recordId: id } : a),
+      };
+      emit();
+    } else if (lastErr) {
+      const detail = lastErr instanceof Error ? lastErr.message : String(lastErr);
+      store = { ...store, warnings: [...(store.warnings || []), `Communication audit was not saved (${detail}).`] };
+      emit();
+    }
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    store = { ...store, warnings: [...(store.warnings || []), `Communication audit was not saved (${detail}).`] };
+    emit();
+  }
+}
+
+function log(row: Communication, title: string, meta: string, channel: AuditChannel = "System") {
   row.log = [...row.log, { title, meta }];
+  void persistAudit(row, title, meta, channel);
 }
 
 function findComm(id: string) {
@@ -269,81 +481,180 @@ export function matchesSearch(q: string, ...fields: unknown[]) {
 }
 
 export function uniqueOrgLabels(values: Array<string | undefined>) {
-  return [...new Set(values.map((v) => (v || "").trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  const seen = new Map<string, string>();
+  for (const value of values) {
+    const text = (value || "").trim();
+    if (!text) continue;
+    const key = text.toLowerCase();
+    if (!seen.has(key)) seen.set(key, text);
+  }
+  return [...seen.values()].sort((a, b) => a.localeCompare(b));
+}
+
+function orgLabelEquals(a?: string, b?: string) {
+  return !!(a && b && a.trim().toLowerCase() === b.trim().toLowerCase());
 }
 
 function unitByRef(value?: string, units: BusinessUnitRef[] = store.businessUnits) {
   const raw = (value || "").trim();
   if (!raw) return undefined;
-  return units.find((u) => u.name === raw || sameId(u.id, raw));
+  return units.find((u) => orgLabelEquals(u.name, raw) || sameId(u.id, raw));
 }
 
-export function partyOrgOptions(parties: Party[], bu = "All", units: BusinessUnitRef[] = store.businessUnits) {
+function deptByRef(value?: string, depts: DepartmentRef[] = store.departments) {
+  const raw = (value || "").trim();
+  if (!raw) return undefined;
+  return depts.find((d) => orgLabelEquals(d.name, raw) || sameId(d.id, raw));
+}
+
+export function partyOrgOptions(
+  parties: Party[],
+  bu = "All",
+  units: BusinessUnitRef[] = store.businessUnits,
+  extras: { comms?: Communication[]; docs?: License[]; departments?: DepartmentRef[] } = {},
+) {
   const businessUnits = uniqueOrgLabels(
     units.length ? units.map((u) => u.name) : parties.map((p) => p.bu),
   );
-  const selected = unitByRef(bu, units);
-  const inBu = bu === "All"
-    ? parties
-    : parties.filter((p) => (p.bu || "").trim() === bu || (!!selected && sameId(p.buId, selected.id)));
+  const depts = extras.departments || store.departments;
+  const fromTable = departmentsForBu(bu, units, depts);
+  if (fromTable.length) return { businessUnits, departments: fromTable };
+
+  const comms = extras.comms || [];
+  const docs = extras.docs || [];
+  const inBuParties = parties.filter((p) => matchesBu(bu, p, units));
+  const inBuComms = comms.filter((row) => {
+    const party = orgParty(row, parties);
+    return matchesBu(bu, { bu: row.bu || party?.bu, buId: row.buId || party?.buId }, units);
+  });
+  const inBuDocs = docs.filter((row) => {
+    const party = orgParty(row, parties);
+    return matchesBu(bu, { bu: row.bu || party?.bu, buId: row.buId || party?.buId }, units);
+  });
+  const deptName = (id?: string, name?: string) => (name || "").trim() || deptByRef(id, depts)?.name;
   return {
     businessUnits,
-    departments: uniqueOrgLabels(inBu.map((p) => p.department)),
+    departments: uniqueOrgLabels([
+      ...inBuParties.map((p) => deptName(p.departmentId, p.department)),
+      ...inBuComms.map((row) => {
+        const party = orgParty(row, parties);
+        return deptName(row.departmentId || party?.departmentId, row.department || party?.department);
+      }),
+      ...inBuDocs.map((row) => {
+        const party = orgParty(row, parties);
+        return deptName(row.departmentId || party?.departmentId, row.department || party?.department);
+      }),
+    ]),
   };
 }
 
+function departmentsForBu(bu: string, units: BusinessUnitRef[], depts: DepartmentRef[]) {
+  const all = uniqueOrgLabels(depts.map((d) => d.name));
+  if (bu === "All" || !depts.length) return all;
+  const selected = unitByRef(bu, units);
+  const tied = depts.filter((d) =>
+    orgLabelEquals(d.companyName, bu)
+    || (!!selected && (sameId(d.companyId, selected.id) || orgLabelEquals(d.companyName, selected.name))),
+  );
+  return tied.length ? uniqueOrgLabels(tied.map((d) => d.name)) : all;
+}
+
 function orgParty(row: { partyId?: string; party?: string }, parties: Party[]) {
-  return parties.find((p) => sameId(p.id, row.partyId) || (!!row.party && p.name === row.party));
+  return parties.find((p) => sameId(p.id, row.partyId) || orgLabelEquals(p.name, row.party));
+}
+
+function matchesBu(
+  bu: string,
+  values: { bu?: string; buId?: string },
+  units: BusinessUnitRef[] = store.businessUnits,
+) {
+  if (bu === "All") return true;
+  const selected = unitByRef(bu, units);
+  const rowUnit = unitByRef(values.buId, units) || unitByRef(values.bu, units);
+  const nameMatch = orgLabelEquals(values.bu, bu);
+  if (selected && rowUnit) {
+    if (!sameId(selected.id, rowUnit.id) && !nameMatch) return false;
+  } else if (!nameMatch && !(selected && sameId(selected.id, values.buId))) {
+    return false;
+  }
+  return true;
+}
+
+function matchesDept(
+  dept: string,
+  values: { department?: string; departmentId?: string },
+  depts: DepartmentRef[] = store.departments,
+) {
+  if (dept === "All") return true;
+  const selected = deptByRef(dept, depts);
+  const rowDept = deptByRef(values.departmentId, depts) || deptByRef(values.department, depts);
+  const nameMatch = orgLabelEquals(values.department, dept);
+  if (selected && rowDept) {
+    if (!sameId(selected.id, rowDept.id) && !nameMatch) return false;
+  } else if (!nameMatch && !(selected && sameId(selected.id, values.departmentId))) {
+    return false;
+  }
+  return true;
+}
+
+function orgValues(
+  row: { bu?: string; buId?: string; department?: string; departmentId?: string; partyId?: string; party?: string },
+  parties: Party[],
+) {
+  const party = orgParty(row, parties);
+  const hasOwnDept = !!(row.departmentId || (row.department || "").trim());
+  return {
+    bu: row.bu || party?.bu,
+    buId: row.buId || party?.buId,
+    department: hasOwnDept ? row.department : party?.department,
+    departmentId: row.departmentId || party?.departmentId,
+  };
 }
 
 function matchesOrg(
   bu: string,
   dept: string,
-  values: { bu?: string; buId?: string; department?: string },
+  values: { bu?: string; buId?: string; department?: string; departmentId?: string },
   units: BusinessUnitRef[] = store.businessUnits,
+  depts: DepartmentRef[] = store.departments,
 ) {
-  if (bu !== "All") {
-    const selected = unitByRef(bu, units);
-    const rowUnit = unitByRef(values.buId, units) || unitByRef(values.bu, units);
-    const nameMatch = (values.bu || "").trim() === bu;
-    if (selected && rowUnit) {
-      if (!sameId(selected.id, rowUnit.id) && !nameMatch) return false;
-    } else if (!nameMatch && !(selected && sameId(selected.id, values.buId))) {
-      return false;
-    }
-  }
-  if (dept !== "All" && (values.department || "").trim() !== dept) return false;
-  return true;
+  return matchesBu(bu, values, units) && matchesDept(dept, values, depts);
 }
 
-export function partyMatchesOrg(party: Party, bu: string, dept: string, units: BusinessUnitRef[] = store.businessUnits) {
-  return matchesOrg(bu, dept, party, units);
+export function partyMatchesOrg(party: Party, bu: string, dept: string, units: BusinessUnitRef[] = store.businessUnits, depts: DepartmentRef[] = store.departments) {
+  return matchesOrg(bu, dept, party, units, depts);
 }
 
-export function commMatchesOrg(row: Communication, bu: string, dept: string, parties: Party[] = store.parties, units: BusinessUnitRef[] = store.businessUnits) {
-  const party = orgParty(row, parties);
-  return matchesOrg(bu, dept, {
-    bu: row.bu || party?.bu,
-    buId: party?.buId,
-    department: row.department || party?.department,
-  }, units);
+export function commMatchesOrg(row: Communication, bu: string, dept: string, parties: Party[] = store.parties, units: BusinessUnitRef[] = store.businessUnits, depts: DepartmentRef[] = store.departments) {
+  return matchesOrg(bu, dept, orgValues(row, parties), units, depts);
 }
 
-export function docMatchesOrg(row: License, bu: string, dept: string, parties: Party[] = store.parties, units: BusinessUnitRef[] = store.businessUnits) {
-  const party = orgParty(row, parties);
-  return matchesOrg(bu, dept, {
-    bu: row.bu || party?.bu,
-    buId: row.buId || party?.buId,
-    department: row.department || party?.department,
-  }, units);
+export function docMatchesOrg(row: License, bu: string, dept: string, parties: Party[] = store.parties, units: BusinessUnitRef[] = store.businessUnits, depts: DepartmentRef[] = store.departments) {
+  return matchesOrg(bu, dept, orgValues(row, parties), units, depts);
 }
 
 function applyUnitName<T extends { bu?: string; buId?: string }>(row: T, units: BusinessUnitRef[]): T {
   const unit = units.find((u) => sameId(u.id, row.buId))
     || units.find((u) => sameId(u.id, row.bu))
-    || units.find((u) => u.name === (row.bu || "").trim());
+    || units.find((u) => orgLabelEquals(u.name, row.bu));
   if (!unit) return row;
   return { ...row, bu: unit.name, buId: unit.id };
+}
+
+function applyDeptName<T extends { department?: string; departmentId?: string }>(row: T, depts: DepartmentRef[]): T {
+  const dept = depts.find((d) => sameId(d.id, row.departmentId))
+    || depts.find((d) => sameId(d.id, row.department))
+    || depts.find((d) => orgLabelEquals(d.name, row.department));
+  if (!dept) return row;
+  return { ...row, department: dept.name, departmentId: dept.id };
+}
+
+function withOrgNames<T extends { bu?: string; buId?: string; department?: string; departmentId?: string }>(
+  row: T,
+  units: BusinessUnitRef[] = store.businessUnits,
+  depts: DepartmentRef[] = store.departments,
+): T {
+  return applyDeptName(applyUnitName(row, units), depts);
 }
 
 function partyNameEquals(a?: string, b?: string) {
@@ -402,8 +713,8 @@ export async function loadCommunicationById(id: string): Promise<Communication |
   if (store.source !== "dataverse" || !isGuid(id)) return undefined;
   try {
     const got = await Erc_communicationsService.get(id.replace(/[{}]/g, ""));
-    if (!got.data) return undefined;
-    const mapped = fillPartyDisplay((await resolveMissingOwners([applyUnitName(mapComm(got.data), store.businessUnits)]))[0]);
+    if (!got.data || !isActiveCommunicationRow(got.data)) return undefined;
+    const mapped = fillPartyDisplay((await resolveMissingOwners([withOrgNames(mapComm(got.data), store.businessUnits, store.departments)]))[0]);
     if (!findComm(mapped.recordId || mapped.id)) {
       store = { ...store, comms: [mapped, ...store.comms] };
       emit();
@@ -736,13 +1047,18 @@ function withTimeout<T>(work: Promise<T>, ms: number, label: string) {
 
 export async function hydrate(useDataverse: boolean) {
   if (!useDataverse) {
+    const archives = structuredClone(SEED.archives || []);
+    const audits = structuredClone(SEED.audits || []);
     store = {
       ...structuredClone(SEED),
       ready: true,
       source: "local",
-      comms: structuredClone(SEED.comms).map((row) => applyFormulaFields(row)),
+      comms: applyArchiveMeta(structuredClone(SEED.comms).map((row) => applyFormulaFields(row)), archives, mergeAudits(audits, SEED.comms)),
       docs: structuredClone(SEED.docs).map((row) => applyLicenseFormulas(row)),
       notices: structuredClone(SEED.notices),
+      archives,
+      audits: mergeAudits(audits, SEED.comms),
+      files: filesFromArchives(archives),
       warnings: ["Not connected to Dataverse. The dashboard will not show live figures until this app runs inside Power Apps."],
     };
     emit();
@@ -772,14 +1088,66 @@ export async function hydrate(useDataverse: boolean) {
     }
   }
 
-  const [mappedParties, mappedSla, mappedCommsRaw, mappedDocs, mappedRenewals, mappedNotices, unitRows] = await Promise.all([
+  async function loadTableRetry<T>(
+    name: string,
+    attempts: Array<() => Promise<{ data?: T[] }>>,
+  ): Promise<T[]> {
+    let lastErr = "";
+    for (const attempt of attempts) {
+      try {
+        const result = await withTimeout(attempt(), 20000, name);
+        return result.data || [];
+      } catch (err) {
+        lastErr = err instanceof Error ? err.message : String(err);
+      }
+    }
+    if (lastErr) warnings.push(`${name} could not be loaded (${lastErr}).`);
+    return [];
+  }
+
+  async function loadDepartments(): Promise<DepartmentRef[]> {
+    const select = ["cr603_chklst_departmentsid", "cr603_department", "cr603_id", "statecode", "_cr603_company_value"];
+    const attempts = [
+      { top: 500, select, filter: "statecode eq 0", orderBy: ["cr603_department asc"] },
+      { top: 500, select, orderBy: ["cr603_department asc"] },
+      { top: 500 },
+    ];
+    for (const opts of attempts) {
+      try {
+        const result = await withTimeout(Cr603_chklst_departmentsesService.getAll({ ...opts }), 20000, "Departments");
+        const mapped = (result.data || []).flatMap((row) => {
+          const next = mapDepartment(row);
+          return next ? [next] : [];
+        });
+        if (mapped.length) return mapped;
+      } catch { /* try a simpler query */ }
+    }
+    warnings.push("Departments (cr603_chklst_departments) could not be loaded.");
+    return [];
+  }
+
+  const [mappedParties, mappedSla, mappedCommsRaw, mappedDocs, mappedRenewals, mappedNotices, mappedArchives, mappedAudits, unitRows, departments] = await Promise.all([
     loadTable("External parties", Erc_externalpartiesService.getAll({ top: 500, orderBy: ["erc_partyname asc"] }), (row) => row),
     loadTable("SLA rules", Erc_sla2sService.getAll({ top: 100 }), (row) => row),
-    loadTable("Communications", Erc_communicationsService.getAll({ top: 250, orderBy: ["createdon desc"] }), (row) => row),
+    loadTable("Communications", Erc_communicationsService.getAll({ top: 250, filter: COMM_ACTIVE_STATUSCODE_FILTER, orderBy: ["createdon desc"] }), (row) => row),
     loadTable("Licenses and contracts", Erc_licenseandcontractsService.getAll({ top: 250, orderBy: ["erc_expirydate asc"] }), (row) => row),
     loadTable("Renewals", Erc_renewalsService.getAll({ top: 250, orderBy: ["erc_duedate asc"] }), (row) => row, { emptyOk: true }),
-    loadTable("Notifications", Erc_notificationsService.getAll({ top: 250, orderBy: ["createdon desc"] }), (row) => row, { emptyOk: true }),
+    loadTableRetry("Notifications", [
+      () => Erc_notificationsService.getAll({ top: 250, orderBy: ["createdon desc"] }),
+      () => Erc_notificationsService.getAll({ top: 250, orderBy: ["erc_senton desc"] }),
+      () => Erc_notificationsService.getAll({ top: 250 }),
+    ]),
+    loadTableRetry("Document archive", [
+      () => Erc_documentarchivesService.getAll({ top: 250, orderBy: ["createdon desc"] }),
+      () => Erc_documentarchivesService.getAll({ top: 250 }),
+    ]),
+    loadTableRetry("Communication audit", [
+      () => Erc_communicationauditsService.getAll({ top: 250, orderBy: ["createdon desc"] }),
+      () => Erc_communicationauditsService.getAll({ top: 250, orderBy: ["erc_performedon desc"] }),
+      () => Erc_communicationauditsService.getAll({ top: 250 }),
+    ]),
     loadTable("Business units", BusinessunitsService.getAll({ top: 500, orderBy: ["name asc"] }), (row) => row, { emptyOk: true }),
+    loadDepartments(),
   ]);
 
   const businessUnits: BusinessUnitRef[] = (unitRows as { businessunitid: string; name: string; isdisabled?: boolean }[])
@@ -787,16 +1155,20 @@ export async function hydrate(useDataverse: boolean) {
     .map((u) => ({ id: u.businessunitid, name: u.name }));
 
   const parties = mappedParties.flatMap((row) => {
-    try { return [applyUnitName(mapParty(row as Parameters<typeof mapParty>[0]), businessUnits)]; } catch { return []; }
+    try { return [withOrgNames(mapParty(row as Parameters<typeof mapParty>[0]), businessUnits, departments)]; } catch { return []; }
   });
   const sla = mappedSla.flatMap((row) => {
     try { return [mapSla(row as Parameters<typeof mapSla>[0])]; } catch { return []; }
   });
   const mappedComms = await resolveMissingOwners(mappedCommsRaw.flatMap((row) => {
-    try { return [applyUnitName(mapComm(row as Parameters<typeof mapComm>[0]), businessUnits)]; } catch { return []; }
+    try {
+      const raw = row as Parameters<typeof mapComm>[0];
+      if (!isActiveCommunicationRow(raw)) return [];
+      return [withOrgNames(mapComm(raw), businessUnits, departments)];
+    } catch { return []; }
   }));
   const docs = mappedDocs.flatMap((row) => {
-    try { return [applyUnitName(mapDoc(row as Parameters<typeof mapDoc>[0]), businessUnits)]; } catch { return []; }
+    try { return [withOrgNames(mapDoc(row as Parameters<typeof mapDoc>[0]), businessUnits, departments)]; } catch { return []; }
   });
   const renewals = mappedRenewals.flatMap((row) => {
     try { return [mapRenewal(row as Parameters<typeof mapRenewal>[0])]; } catch { return []; }
@@ -804,6 +1176,13 @@ export async function hydrate(useDataverse: boolean) {
   const notices = mappedNotices.flatMap((row) => {
     try { return [mapNotice(row as Parameters<typeof mapNotice>[0])]; } catch { return []; }
   });
+  const archives = mappedArchives.flatMap((row) => {
+    try { return [mapArchive(row as Parameters<typeof mapArchive>[0])]; } catch { return []; }
+  });
+  const tableAudits = mappedAudits.flatMap((row) => {
+    try { return [mapAudit(row as Parameters<typeof mapAudit>[0])]; } catch { return []; }
+  });
+  const audits = mergeAudits(tableAudits, mappedComms);
 
   store = {
     source: "dataverse",
@@ -814,14 +1193,17 @@ export async function hydrate(useDataverse: boolean) {
     warnings,
     sla,
     parties,
-    comms: mappedComms.map((row) => fillPartyDisplay(row, parties)),
+    comms: applyArchiveMeta(mappedComms.map((row) => fillPartyDisplay(row, parties)), archives, audits),
     docs,
     renewals,
     notices,
+    archives,
+    audits,
     intake: [],
-    files: [],
+    files: filesFromArchives(archives),
     threadByComm: {},
     businessUnits,
+    departments,
   };
   emit();
   try {
@@ -994,10 +1376,12 @@ export async function addParty(input: Omit<Party, "id" | "status"> & { status?: 
         Object.assign(party, mapped, {
           status: mapped.status || party.status,
           criticality: mapped.criticality || party.criticality,
-          ...applyUnitName({
+          ...withOrgNames({
             bu: mapped.bu || party.bu,
             buId: mapped.buId || party.buId,
-          }, store.businessUnits),
+            department: mapped.department || party.department,
+            departmentId: mapped.departmentId || party.departmentId,
+          }, store.businessUnits, store.departments),
         });
       }
     } catch { /* keep submitted values */ }
@@ -1045,6 +1429,7 @@ export async function addComm(input: Omit<Communication, "id" | "recordId" | "lo
       ...extraCommFields(row),
       ...(row.partyId ? { "erc_ExternalParty@odata.bind": `/erc_externalparties(${row.partyId})` } : { erc_category: categoryChoice(row.cat) }),
       ...(row.slaId && !row.slaId.startsWith("S") ? { "erc_SLARule@odata.bind": `/erc_sla2s(${row.slaId})` } : {}),
+      ...(row.caseRef ? { erc_caserefrence: row.caseRef } : {}),
     } as unknown as Omit<Erc_communicationsBase, "erc_communicationid">;
     try {
       const created = await Erc_communicationsService.create(payload);
@@ -1069,44 +1454,50 @@ export async function addComm(input: Omit<Communication, "id" | "recordId" | "lo
   }
   store = { ...store, comms: [row, ...store.comms] };
   emit();
+  void persistAudit(row, "Communication created", row.subj, row.type === "Inbound" ? "Email" : "System");
   return row;
 }
 
-export async function addDoc(input: Omit<License, "id" | "recordId">) {
-  const expiry = input.expiry;
+export async function addDoc(input: Omit<License, "id" | "recordId">, file?: File) {
+  const localId = nextLocalDocId();
+  const party = store.parties.find((p) => p.id === input.partyId || p.name === input.party);
+  const auth = store.parties.find((p) => p.id === input.issuingAuthorityId || p.name === input.auth);
+  const unit = store.businessUnits.find((u) => u.id === input.buId || u.name === input.bu);
+  const dept = store.departments.find((d) => d.id === input.departmentId || d.name === input.department);
   const row: License = applyLicenseFormulas({
     ...input,
-    id: nextLocalDocId(),
+    id: input.documentNumber?.trim() || localId,
     recordId: "",
+    documentNumber: input.documentNumber?.trim() || localId,
+    party: party?.name || input.party,
+    partyId: input.partyId || party?.id,
+    auth: auth?.name || input.auth,
+    issuingAuthorityId: input.issuingAuthorityId || auth?.id,
+    bu: unit?.name || input.bu,
+    buId: input.buId || unit?.id,
+    department: dept?.name || input.department,
+    departmentId: input.departmentId || dept?.id,
+    owner: input.owner || ME,
     reminderThreshold: input.reminderThreshold || DEFAULT_REMINDER_THRESHOLD,
     reminderSent: false,
     isEscalated: false,
+    active: input.active !== false,
+    renewalStatus: input.renewalStatus || "Not Started",
+    currentDocumentName: file?.name || input.currentDocumentName,
   });
-  const party = store.parties.find((p) => p.name === input.party || p.id === input.partyId);
-  const unit = store.businessUnits.find((u) => u.id === input.buId || u.name === input.bu);
-  row.partyId = input.partyId || party?.id;
-  row.buId = input.buId || unit?.id;
-  row.bu = unit?.name || input.bu;
   if (store.source === "dataverse") {
     const created = await Erc_licenseandcontractsService.create({
-      erc_licenseandcontract1: row.name,
-      erc_documenttype: docTypeChoice(row.type),
-      erc_expirydate: isoDateTime(row.expiry) || row.expiry,
-      erc_issuedate: isoDateTime(row.issue),
-      erc_risklevel: riskChoice(row.risk),
-      erc_renewalstatus: renewalChoice("Not Started"),
-      erc_active: true,
-      erc_daysremaining: row.daysRemaining ?? daysBetween(todayIso(), expiry),
-      erc_reminderthreshold: thresholdOf(row),
+      ...licenseWritableFields(row),
       erc_remindersent: false,
       erc_isescalated: false,
-      erc_documentnumber: row.id,
-      ...(row.partyId ? { "erc_ExternalParty@odata.bind": `/erc_externalparties(${row.partyId})` } : {}),
-      ...(row.buId && isGuid(row.buId) ? { "erc_BusinessUnit@odata.bind": `/businessunits(${row.buId})` } : {}),
     } as Omit<Erc_licenseandcontractsBase, "erc_licenseandcontractid">);
     if (created.data) {
       row.recordId = created.data.erc_licenseandcontractid;
-      Object.assign(row, applyLicenseFormulas({ ...row, ...mapDoc(created.data), recordId: created.data.erc_licenseandcontractid }));
+      Object.assign(row, await docFromDataverse(created.data.erc_licenseandcontractid, row));
+      if (file) {
+        await Erc_licenseandcontractsService.upload(row.recordId, "erc_currentdocument", file, file.name);
+        Object.assign(row, await docFromDataverse(row.recordId, { ...row, currentDocumentName: file.name }));
+      }
     }
   } else {
     row.recordId = row.id;
@@ -1115,6 +1506,57 @@ export async function addDoc(input: Omit<License, "id" | "recordId">) {
   emit();
   if (isThresholdReached(row)) await runLicenseMonitor();
   return row;
+}
+
+export async function saveDoc(id: string, extra: Partial<License>) {
+  const current = findDoc(id);
+  if (!current) throw new Error("Document not found");
+  if (docLocked(current)) throw new Error("Renewal cycle is closed");
+  const party = store.parties.find((p) => p.id === extra.partyId || p.name === extra.party);
+  const auth = store.parties.find((p) => p.id === extra.issuingAuthorityId || p.name === extra.auth);
+  const unit = store.businessUnits.find((u) => u.id === extra.buId || u.name === extra.bu);
+  const dept = store.departments.find((d) => d.id === extra.departmentId || d.name === extra.department);
+  const next = applyLicenseFormulas({
+    ...current,
+    ...extra,
+    party: party?.name || extra.party || current.party,
+    partyId: extra.partyId !== undefined ? (party?.id || extra.partyId) : current.partyId,
+    auth: auth?.name || extra.auth || current.auth,
+    issuingAuthorityId: extra.issuingAuthorityId !== undefined ? (auth?.id || extra.issuingAuthorityId) : current.issuingAuthorityId,
+    bu: unit?.name || extra.bu || current.bu,
+    buId: extra.buId !== undefined ? (unit?.id || extra.buId) : current.buId,
+    department: extra.department !== undefined ? (dept?.name || extra.department) : current.department,
+    departmentId: extra.departmentId !== undefined ? (dept?.id || extra.departmentId) : current.departmentId,
+  });
+  await persistLicense(next, licenseWritableFields(next));
+  const saved = store.source === "dataverse" && isGuid(next.recordId)
+    ? await docFromDataverse(next.recordId, next)
+    : next;
+  replaceDoc(saved);
+  if (isThresholdReached(saved) && !saved.reminderSent) await runLicenseMonitor();
+  return saved;
+}
+
+export async function uploadLicenseFile(id: string, file: File) {
+  const current = findDoc(id);
+  if (!current) throw new Error("Document not found");
+  if (store.source === "dataverse" && isGuid(current.recordId)) {
+    await Erc_licenseandcontractsService.upload(current.recordId, "erc_currentdocument", file, file.name);
+    const fresh = await docFromDataverse(current.recordId, { ...current, currentDocumentName: file.name });
+    return replaceDoc(fresh);
+  }
+  return replaceDoc({ ...current, currentDocumentName: file.name });
+}
+
+export async function downloadLicenseFile(id: string) {
+  const current = findDoc(id);
+  if (!current) throw new Error("Document not found");
+  if (store.source !== "dataverse" || !isGuid(current.recordId)) {
+    throw new Error("File download is only available when connected to Dataverse");
+  }
+  const result = await Erc_licenseandcontractsService.downloadFile(current.recordId, "erc_currentdocument");
+  if (!result.data) throw new Error("No current document file on this record");
+  return { name: current.currentDocumentName || "document", bytes: result.data };
 }
 
 export async function ingestEmail(mail: IntakeEmail) {
@@ -1261,7 +1703,9 @@ export async function saveComm(id: string, extra: Partial<Communication>) {
     erc_subject: next.subj,
     erc_emailsubject: next.emailSubject || next.subj,
     erc_description: next.description,
+    erc_caserefrence: next.caseRef || "",
     ...(next.partyId && !String(next.partyId).startsWith("P") ? { "erc_ExternalParty@odata.bind": `/erc_externalparties(${next.partyId})` } : {}),
+    ...(next.slaId && isGuid(next.slaId) ? { "erc_SLARule@odata.bind": `/erc_sla2s(${next.slaId})` } : {}),
     ...(!next.partyId && extra.cat ? { erc_category: categoryChoice(next.cat) } : {}),
   });
   if (store.source === "dataverse" && next.recordId) {
@@ -1334,8 +1778,8 @@ export async function resolveUnmatchedEmail(mail: IntakeEmail, opts: { partyId?:
 export async function tickFormulas(now = new Date()) {
   if (store.source === "dataverse") {
     try {
-      const comms = await Erc_communicationsService.getAll({ top: 250, orderBy: ["createdon desc"] });
-      store = { ...store, comms: await resolveMissingOwners((comms.data || []).map(mapComm).map((row) => fillPartyDisplay(row))) };
+      const comms = await Erc_communicationsService.getAll({ top: 250, filter: COMM_ACTIVE_STATUSCODE_FILTER, orderBy: ["createdon desc"] });
+      store = { ...store, comms: await resolveMissingOwners((comms.data || []).filter(isActiveCommunicationRow).map(mapComm).map((row) => fillPartyDisplay(row))) };
       emit();
     } catch { /* keep the last loaded formula values */ }
     return;
@@ -1389,8 +1833,8 @@ export async function escalateManually(
   replaceComm(next);
   try {
     await persistComm(next, {
-      erc_ismanuallyescalated: true,
-      erc_isescalated: true,
+      erc_ismanuallyescalated: yesNoChoice(true),
+      erc_isescalated: yesNoChoice(true),
       erc_escalationreason: next.escalationReason,
     });
     if (next.closureComment || extras.closedBy) {
@@ -1401,6 +1845,7 @@ export async function escalateManually(
         });
       } catch { /* lock is already written; closure stamps are optional */ }
     }
+    void persistAudit(next, "Manually escalated", reasonText);
     if (store.source === "dataverse" && next.recordId) {
       const fresh = await commFromDataverse(next.recordId, next);
       return replaceComm({
@@ -1463,6 +1908,7 @@ export async function closeComm(id: string, comment: string, evidenceCount?: num
     erc_lifecyclestatus: lifecycleChoice("Closed"),
     erc_closurecomment: next.closureComment,
   });
+  void persistAudit(next, "Record closed", commentText);
   return replaceComm(next);
 }
 
@@ -1480,16 +1926,84 @@ export async function startWork(id: string) {
   return setCommStatus(current.id, "In Progress", { log: current.log });
 }
 
-export function addEvidence(rel: string, name: string, by: string) {
-  const file: EvidenceFile = { id: `F${Date.now()}`, name, rel, date: todayIso(), by };
-  const comms = store.comms.map((c) => {
-    if (c.id !== rel && c.recordId !== rel) return c;
-    log(c, "Evidence uploaded", `${file.date} — ${file.name}`);
-    return { ...c, ev: c.ev + 1, log: c.log };
-  });
-  store = { ...store, files: [file, ...store.files], comms };
+export async function addArchive(input: {
+  name: string;
+  type: ArchiveType;
+  notes?: string;
+  communicationId?: string;
+  licenseId?: string;
+  file?: File;
+}) {
+  const comm = input.communicationId ? findComm(input.communicationId) : undefined;
+  const doc = input.licenseId
+    ? store.docs.find((d) => d.id === input.licenseId || d.recordId === input.licenseId)
+    : undefined;
+  const row: ArchiveDoc = {
+    id: `F${Date.now()}`,
+    recordId: "",
+    name: input.name,
+    type: input.type,
+    notes: input.notes,
+    fileName: input.file?.name || input.name,
+    communicationId: comm?.recordId || comm?.id || input.communicationId,
+    communicationName: comm?.id || comm?.subj,
+    licenseId: doc?.recordId || doc?.id || input.licenseId,
+    licenseName: doc?.name,
+    uploadedBy: ME,
+    uploadedOn: new Date().toISOString(),
+  };
+  if (store.source === "dataverse") {
+    const payload = {
+      erc_name: clip100(row.name),
+      erc_documenttypes: archiveTypeChoice(row.type) as Erc_documentarchivesBase["erc_documenttypes"],
+      erc_notes: row.notes ? clip100(row.notes) : undefined,
+      erc_uploadedon: row.uploadedOn,
+      ...(isGuid(comm?.recordId) ? { "erc_RelatedCommunication@odata.bind": `/erc_communications(${comm.recordId})` } : {}),
+      ...(isGuid(doc?.recordId) ? { "erc_RelatedLicense@odata.bind": `/erc_licenseandcontracts(${doc.recordId})` } : {}),
+    };
+    const created = await Erc_documentarchivesService.create(payload as Omit<Erc_documentarchivesBase, "erc_documentarchiveid">);
+    if (created.data?.erc_documentarchiveid) {
+      row.recordId = created.data.erc_documentarchiveid;
+      row.id = row.recordId;
+      if (input.file) {
+        try {
+          await Erc_documentarchivesService.upload(row.recordId, "erc_file", input.file, input.file.name);
+          row.fileName = input.file.name;
+        } catch (err) {
+          const detail = err instanceof Error ? err.message : "unknown error";
+          throw new Error(`Archive record saved, but the file did not upload: ${detail}`);
+        }
+      }
+    }
+  } else {
+    row.recordId = row.id;
+  }
+  const archives = [row, ...store.archives];
+  if (comm) log(comm, "Evidence uploaded", `${dateOnly(row.uploadedOn)} — ${row.fileName || row.name}`);
+  const comms = comm
+    ? store.comms.map((c) => c.id === comm.id || c.recordId === comm.recordId ? { ...c, ev: c.ev + 1, log: comm.log } : c)
+    : store.comms;
+  store = { ...store, archives, files: filesFromArchives(archives), comms };
   emit();
-  return file;
+  return row;
+}
+
+export async function addEvidence(rel: string, name: string, by: string, file?: File) {
+  return addArchive({
+    name,
+    type: "Communication evidence",
+    communicationId: rel,
+    file,
+    notes: by ? `Uploaded by ${by}` : undefined,
+  });
+}
+
+export async function downloadArchiveFile(id: string) {
+  const row = store.archives.find((a) => a.id === id || a.recordId === id);
+  if (!row?.recordId || store.source !== "dataverse") throw new Error("File is not stored in Dataverse.");
+  const result = await Erc_documentarchivesService.downloadFile(row.recordId, "erc_file");
+  if (!result.data) throw new Error("Could not download the file.");
+  return { name: row.fileName || row.name, bytes: result.data };
 }
 
 export async function renewDoc(id: string) {
@@ -1559,6 +2073,7 @@ export async function reopenDoc(id: string) {
     ...current,
     done: "",
     status: "",
+    renewalStatus: "In Progress",
     reminderSent: false,
     isEscalated: false,
     escalationReason: "",
@@ -1829,8 +2344,8 @@ export async function runLicenseMonitor() {
 }
 
 export const ME = "Mariam Alaa";
-export { addDays, daysBetween, slaState, docState, todayIso, nowStamp, needsEvidence, applyFormulaFields, summarizeMonitor };
-export { communicationDeepLink, communicationPlayUrl, parseCommunicationDeepLink, copyText, COMM_DEEP_LINK_PARAM, cleanRecordGuid, setHostQueryParams } from "./deeplink";
+export { addDays, daysBetween, slaState, docState, todayIso, nowStamp, needsEvidence, applyFormulaFields, summarizeMonitor, dateOnly };
+export { communicationDeepLink, communicationPlayUrl, parseCommunicationDeepLink, copyText, COMM_DEEP_LINK_PARAM, cleanRecordGuid, setHostQueryParams, syncHostQueryFromWindow } from "./deeplink";
 export { canAutoEscalate, canManualEscalate, isAlreadyEscalated, formatDateTime, overdueLabel, escalatedLabel, yesNo, OVERDUE_HOURS } from "./communicationLogic";
 export { DEFAULT_REMINDER_THRESHOLD, thresholdOf, unreadNotices } from "./licenseLogic";
 export const TODAY = todayIso();

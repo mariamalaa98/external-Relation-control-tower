@@ -6,8 +6,10 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:webresource": "vite build --config vite.webresource.config.ts",
+    "build:all": "npm run build && npm run build:webresource",
     "preview": "vite preview",
-    "push": "pa app push --non-interactive"
+    "push": "power-apps push"
   },
   "dependencies": {
     "@microsoft/power-apps": "^1.2.5",

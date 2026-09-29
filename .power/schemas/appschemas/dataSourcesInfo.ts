@@ -26,17 +26,10 @@ export const dataSourcesInfo = {
     "dataSourceType": "Dataverse",
     "apis": {}
   },
-  "cr603_chklst_departmentses": {
+  "erc_communicationaudits": {
     "tableId": "",
     "version": "",
-    "primaryKey": "cr603_chklst_departmentsid",
-    "dataSourceType": "Dataverse",
-    "apis": {}
-  },
-  "emails": {
-    "tableId": "",
-    "version": "",
-    "primaryKey": "activityid",
+    "primaryKey": "erc_communicationauditid",
     "dataSourceType": "Dataverse",
     "apis": {}
   },
@@ -44,6 +37,27 @@ export const dataSourcesInfo = {
     "tableId": "",
     "version": "",
     "primaryKey": "erc_communicationid",
+    "dataSourceType": "Dataverse",
+    "apis": {}
+  },
+  "cr603_chklst_departmentses": {
+    "tableId": "",
+    "version": "",
+    "primaryKey": "cr603_chklst_departmentsid",
+    "dataSourceType": "Dataverse",
+    "apis": {}
+  },
+  "erc_documentarchives": {
+    "tableId": "",
+    "version": "",
+    "primaryKey": "erc_documentarchiveid",
+    "dataSourceType": "Dataverse",
+    "apis": {}
+  },
+  "emails": {
+    "tableId": "",
+    "version": "",
+    "primaryKey": "activityid",
     "dataSourceType": "Dataverse",
     "apis": {}
   },
@@ -82,17 +96,17 @@ export const dataSourcesInfo = {
     "dataSourceType": "Dataverse",
     "apis": {}
   },
-  "systemusers": {
-    "tableId": "",
-    "version": "",
-    "primaryKey": "systemuserid",
-    "dataSourceType": "Dataverse",
-    "apis": {}
-  },
   "teams": {
     "tableId": "",
     "version": "",
     "primaryKey": "teamid",
+    "dataSourceType": "Dataverse",
+    "apis": {}
+  },
+  "systemusers": {
+    "tableId": "",
+    "version": "",
+    "primaryKey": "systemuserid",
     "dataSourceType": "Dataverse",
     "apis": {}
   }

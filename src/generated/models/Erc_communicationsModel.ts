@@ -8,32 +8,41 @@ export const Erc_communicationserc_categoryf = {
   3: 'Regulatory',
   4: 'Legal',
   5: 'Corporate',
-  6: ' Partner'
+  6: 'Partner'
 } as const;
 export type Erc_communicationserc_categoryf = keyof typeof Erc_communicationserc_categoryf;
 export const Erc_communicationserc_communicationtype = {
   789180000: 'Inbound',
   789180001: 'Outbound',
-  789180002: 'Internal follow up'
+  789180002: 'Internalfollowup'
 } as const;
 export type Erc_communicationserc_communicationtype = keyof typeof Erc_communicationserc_communicationtype;
+export const Erc_communicationserc_isescalated = {
+  0: 'No',
+  1: 'Yes'
+} as const;
+export type Erc_communicationserc_isescalated = keyof typeof Erc_communicationserc_isescalated;
+export const Erc_communicationserc_ismanuallyescalated = {
+  0: 'No',
+  1: 'Yes'
+} as const;
+export type Erc_communicationserc_ismanuallyescalated = keyof typeof Erc_communicationserc_ismanuallyescalated;
 export const Erc_communicationserc_lifecyclestatus = {
   1: 'Open',
-  2: 'In Progress',
-  3: 'Pending Evidence ',
+  2: 'InProgress',
+  3: 'PendingEvidence',
   4: 'Closed'
 } as const;
 export type Erc_communicationserc_lifecyclestatus = keyof typeof Erc_communicationserc_lifecyclestatus;
 export const Erc_communicationserc_priorityf = {
-  1: 'Critical',
-  2: 'High',
-  3: 'Medium',
-  4: 'Low'
+  125470000: 'High',
+  125470001: 'Medium',
+  125470002: 'Low'
 } as const;
 export type Erc_communicationserc_priorityf = keyof typeof Erc_communicationserc_priorityf;
 export const Erc_communicationserc_slastatus = {
-  1: 'On track',
-  2: 'Near breach',
+  1: 'Ontrack',
+  2: 'Nearbreach',
   3: 'overdue',
   4: 'Escalated'
 } as const;
@@ -50,6 +59,7 @@ export const Erc_communicationsstatuscode = {
 export type Erc_communicationsstatuscode = keyof typeof Erc_communicationsstatuscode;
 
 export interface Erc_communicationsBase {
+  erc_caserefrence?: string;
   "erc_ClosedBy@odata.bind"?: string;
   erc_closurecomment?: string;
   erc_closuredatetime?: string;
@@ -62,8 +72,8 @@ export interface Erc_communicationsBase {
   erc_escalationreason?: string;
   "erc_ExternalParty@odata.bind"?: string;
   erc_id?: string;
-  erc_isescalated?: boolean;
-  erc_ismanuallyescalated?: boolean;
+  erc_isescalated?: Erc_communicationserc_isescalated;
+  erc_ismanuallyescalated?: Erc_communicationserc_ismanuallyescalated;
   erc_lifecyclestatus?: Erc_communicationserc_lifecyclestatus;
   erc_receiveddate?: string;
   erc_responsesummary?: string;
@@ -71,12 +81,14 @@ export interface Erc_communicationsBase {
   erc_slastatus?: Erc_communicationserc_slastatus;
   erc_subject?: string;
   "erc_Supervisor@odata.bind"?: string;
-  importsequencenumber?: number;
+  importsequencenumber?: string;
   overriddencreatedon?: string;
+  ownerid: string;
+  owneridtype: string;
   statecode: Erc_communicationsstatecode;
   statuscode?: Erc_communicationsstatuscode;
-  timezoneruleversionnumber?: number;
-  utcconversiontimezonecode?: number;
+  timezoneruleversionnumber?: string;
+  utcconversiontimezonecode?: string;
 }
 
 export interface Erc_communications extends Erc_communicationsBase {
@@ -112,14 +124,12 @@ export interface Erc_communications extends Erc_communicationsBase {
   modifiedon?: string;
   modifiedonbehalfbyname?: string;
   modifiedonbehalfbyyominame: string;
-  ownerid: string;
   owneridname: string;
-  owneridtype: string;
   owneridyominame: string;
   owningbusinessunitname: string;
   statecodename?: string;
   statuscodename?: string;
-  versionnumber?: number;
+  versionnumber?: string;
   createdby?: object;
   _createdby_value?: string;
   createdonbehalfby?: object;
