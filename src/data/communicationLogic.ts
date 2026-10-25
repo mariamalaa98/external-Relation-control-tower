@@ -1,5 +1,10 @@
-import { CENTRAL_MAILBOX_ADDRESSES, type CommStatus, type Communication, type IntakeEmail } from "./types";
+import { CENTRAL_MAILBOX_ADDRESSES, type CommStatus, type Communication, type EscalationChain, type IntakeEmail } from "./types";
 import { FLOWS, matchesAutoEscalationFilter } from "./flows";
+
+/** Used when a chain row has no erc_waithours, matching the cloud flow. */
+export const DEFAULT_LEVEL_WAIT_HOURS = 24;
+/** Local preview cap when no Esclation Chain rows are loaded. */
+const LOCAL_CHAIN_LEVELS = 5;
 
 /** Prototype stand-in only. Live overdue is the Dataverse formula column erc_isoverdue (Created On + 2 hours). */
 export const OVERDUE_HOURS = 2;
@@ -66,24 +71,53 @@ export function computeIsOverdue(row: Pick<Communication, "createdOn" | "status"
   return now.getTime() >= due.getTime();
 }
 
-export function isEscalationLocked(row: Pick<Communication, "isEscalated" | "status">) {
-  return !!row.isEscalated || row.status === "Closed";
+function activeChain(chains: EscalationChain[], teamId?: string) {
+  const active = chains.filter((row) => row.active && row.sequence > 0);
+  if (!teamId) return active;
+  const mine = active.filter((row) => row.teamId === teamId);
+  return mine.length ? mine : active;
 }
 
-export function canAutoEscalate(row: Communication) {
-  return matchesAutoEscalationFilter({
-    isOverdue: row.isOverdue,
-    isEscalated: row.isEscalated,
-    status: row.status,
-  });
+/** True when someone is still waiting on the level after `currentStep`. */
+export function hasFollowingLevel(currentStep: number, chains: EscalationChain[] = [], teamId?: string) {
+  const rows = activeChain(chains, teamId);
+  if (!rows.length) return currentStep < LOCAL_CHAIN_LEVELS;
+  return rows.some((row) => row.sequence === currentStep + 1 && !!row.userId);
 }
 
-export function isAlreadyEscalated(row: Pick<Communication, "isEscalated" | "isManuallyEscalated" | "isAutomaticallyEscalated" | "status">) {
-  return row.status === "Closed" || !!row.isEscalated || !!row.isManuallyEscalated || !!row.isAutomaticallyEscalated;
+function waitHoursForLevel(level: number, chains: EscalationChain[], teamId?: string) {
+  const hours = activeChain(chains, teamId).find((row) => row.sequence === level && row.waitHours && row.waitHours > 0)?.waitHours;
+  return hours || DEFAULT_LEVEL_WAIT_HOURS;
 }
 
-export function canManualEscalate(row: Communication) {
-  return !isAlreadyEscalated(row);
+function levelAdvance(row: Communication, at: Date, chains: EscalationChain[], teamId?: string) {
+  const step = (row.escalationStep || 0) + 1;
+  const people = activeChain(chains, teamId)
+    .filter((item) => item.sequence === step && item.userName)
+    .map((item) => item.userName as string);
+  const following = hasFollowingLevel(step, chains, teamId);
+  return {
+    escalationStep: step,
+    lastEscalatedOn: toIso(at),
+    nextEscalationOn: following ? addHours(at, waitHoursForLevel(step, chains, teamId)) : undefined,
+    currentRecipient: people.length ? people.join(", ") : row.currentRecipient,
+  };
+}
+
+export function isEscalationLocked(row: Communication, chains: EscalationChain[] = [], teamId?: string) {
+  return row.status === "Closed" || !hasFollowingLevel(row.escalationStep || 0, chains, teamId);
+}
+
+export function canAutoEscalate(row: Communication, chains: EscalationChain[] = [], teamId?: string) {
+  return matchesAutoEscalationFilter(row) && hasFollowingLevel(row.escalationStep || 0, chains, teamId);
+}
+
+export function isAlreadyEscalated(row: Pick<Communication, "isEscalated" | "isManuallyEscalated" | "isAutomaticallyEscalated">) {
+  return !!row.isEscalated || !!row.isManuallyEscalated || !!row.isAutomaticallyEscalated;
+}
+
+export function canManualEscalate(row: Communication, chains: EscalationChain[] = [], teamId?: string) {
+  return row.status !== "Closed" && hasFollowingLevel(row.escalationStep || 0, chains, teamId);
 }
 
 export function yesNo(value?: boolean) {
@@ -146,15 +180,54 @@ export function applyFormulaFields(row: Communication, now = new Date()): Commun
   };
 }
 
-export function automaticEscalationPatch(row: Communication, at = new Date()): Communication {
+/** Reply Responsible team on the related external party. */
+export function responsibleTeamOf(
+  _row: Pick<Communication, "owner">,
+  party?: { responsibleTeam?: string },
+) {
+  return party?.responsibleTeam?.trim() || "Unassigned";
+}
+
+/** Records the create-time team email. Does not advance the escalation chain. */
+export function withTeamNotification(
+  row: Communication,
+  party?: { responsibleTeam?: string },
+  at?: Date,
+): Communication {
+  const when = at || parseDate(row.createdOn) || new Date();
+  const entry = {
+    title: FLOWS.notifyResponsibleTeam.name,
+    meta: `${toIso(when)} — ${responsibleTeamOf(row, party)} · ${FLOWS.notifyResponsibleTeam.filter}`,
+  };
+  const existing = row.log.findIndex((item) => item.title === entry.title);
+  if (existing >= 0) {
+    if (row.log[existing].meta === entry.meta) return row;
+    const log = row.log.slice();
+    log[existing] = entry;
+    return { ...row, log };
+  }
+  const log = row.log.slice();
+  const afterCreate = log.findIndex((item) => /creat/i.test(item.title));
+  log.splice(afterCreate >= 0 ? afterCreate + 1 : 0, 0, entry);
+  return { ...row, log };
+}
+
+export function automaticEscalationPatch(
+  row: Communication,
+  at = new Date(),
+  chains: EscalationChain[] = [],
+  teamId?: string,
+): Communication {
+  const advance = levelAdvance(row, at, chains, teamId);
   return {
     ...row,
+    ...advance,
     isAutomaticallyEscalated: true,
     isEscalated: true,
     escalatedBy: row.escalatedBy || "System (Automatic Escalation)",
     log: [
       ...row.log,
-      { title: FLOWS.autoEscalation.name, meta: `${toIso(at)} — ${FLOWS.autoEscalation.filter}` },
+      { title: FLOWS.autoEscalation.name, meta: `${toIso(at)} — level ${advance.escalationStep} · ${FLOWS.autoEscalation.filter}` },
     ],
   };
 }
@@ -163,11 +236,13 @@ export function manualEscalationPatch(
   row: Communication,
   reason: string,
   by: string,
-  extras: { closedBy?: string; closureComment?: string } = {},
+  extras: { closedBy?: string; closureComment?: string; chains?: EscalationChain[]; teamId?: string } = {},
   at = new Date(),
 ): Communication {
+  const advance = levelAdvance(row, at, extras.chains || [], extras.teamId);
   return {
     ...row,
+    ...advance,
     isManuallyEscalated: true,
     isEscalated: true,
     isAutomaticallyEscalated: row.isAutomaticallyEscalated,
@@ -177,7 +252,7 @@ export function manualEscalationPatch(
     closureComment: extras.closureComment || row.closureComment,
     log: [
       ...row.log,
-      { title: FLOWS.manualEscalation.name, meta: `${toIso(at)} — set ${FLOWS.manualEscalation.triggerColumn} = true · ${by}${reason ? ` · ${reason}` : ""}` },
+      { title: FLOWS.manualEscalation.name, meta: `${toIso(at)} — level ${advance.escalationStep} · ${by}${reason ? ` · ${reason}` : ""}` },
     ],
   };
 }
@@ -189,6 +264,7 @@ export function closureFromFlow(row: Communication, comment: string, by: string,
     status: "Closed" as CommStatus,
     closed: stamp,
     closedBy: by,
+    nextEscalationOn: undefined,
     closureComment: comment,
     log: [
       ...row.log,

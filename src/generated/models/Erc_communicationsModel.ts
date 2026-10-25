@@ -17,16 +17,6 @@ export const Erc_communicationserc_communicationtype = {
   789180002: 'Internalfollowup'
 } as const;
 export type Erc_communicationserc_communicationtype = keyof typeof Erc_communicationserc_communicationtype;
-export const Erc_communicationserc_isescalated = {
-  0: 'No',
-  1: 'Yes'
-} as const;
-export type Erc_communicationserc_isescalated = keyof typeof Erc_communicationserc_isescalated;
-export const Erc_communicationserc_ismanuallyescalated = {
-  0: 'No',
-  1: 'Yes'
-} as const;
-export type Erc_communicationserc_ismanuallyescalated = keyof typeof Erc_communicationserc_ismanuallyescalated;
 export const Erc_communicationserc_lifecyclestatus = {
   1: 'Open',
   2: 'InProgress',
@@ -65,30 +55,34 @@ export interface Erc_communicationsBase {
   erc_closuredatetime?: string;
   erc_communicationid: string;
   erc_communicationtype: Erc_communicationserc_communicationtype;
+  "erc_CurrentRecipient@odata.bind"?: string;
   "erc_Department@odata.bind"?: string;
   erc_description?: string;
   erc_emailsubject?: string;
   "erc_EscalatedBy@odata.bind"?: string;
   erc_escalationreason?: string;
+  erc_escalationstep?: number;
   "erc_ExternalParty@odata.bind"?: string;
   erc_id?: string;
-  erc_isescalated?: Erc_communicationserc_isescalated;
-  erc_ismanuallyescalated?: Erc_communicationserc_ismanuallyescalated;
+  erc_isescalated?: boolean;
+  erc_ismanuallyescalated?: boolean;
+  erc_lastescalatedon?: string;
   erc_lifecyclestatus?: Erc_communicationserc_lifecyclestatus;
+  erc_nextescalationon?: string;
   erc_receiveddate?: string;
   erc_responsesummary?: string;
   "erc_SLARule@odata.bind"?: string;
   erc_slastatus?: Erc_communicationserc_slastatus;
   erc_subject?: string;
   "erc_Supervisor@odata.bind"?: string;
-  importsequencenumber?: string;
+  importsequencenumber?: number;
   overriddencreatedon?: string;
   ownerid: string;
   owneridtype: string;
   statecode: Erc_communicationsstatecode;
   statuscode?: Erc_communicationsstatuscode;
-  timezoneruleversionnumber?: string;
-  utcconversiontimezonecode?: string;
+  timezoneruleversionnumber?: number;
+  utcconversiontimezonecode?: number;
 }
 
 export interface Erc_communications extends Erc_communicationsBase {
@@ -103,6 +97,8 @@ export interface Erc_communications extends Erc_communicationsBase {
   erc_closedbyname?: string;
   erc_closedbyyominame?: string;
   erc_communicationtypename?: string;
+  erc_currentrecipientname?: string;
+  erc_currentrecipientyominame?: string;
   erc_departmentname?: string;
   erc_duedate?: string;
   erc_escalatedbyname?: string;
@@ -129,13 +125,15 @@ export interface Erc_communications extends Erc_communicationsBase {
   owningbusinessunitname: string;
   statecodename?: string;
   statuscodename?: string;
-  versionnumber?: string;
+  versionnumber?: number;
   createdby?: object;
   _createdby_value?: string;
   createdonbehalfby?: object;
   _createdonbehalfby_value?: string;
   erc_closedby?: object;
   _erc_closedby_value?: string;
+  erc_currentrecipient?: object;
+  _erc_currentrecipient_value?: string;
   erc_department?: object;
   _erc_department_value?: string;
   erc_escalatedby?: object;

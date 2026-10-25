@@ -1,8 +1,26 @@
 /** Dataverse client for the HTML web resource. Uses OData entity-set names (same as the Code App). */
 
+import { DATA_ENVIRONMENT } from "../src/data/environments";
+
 type Loose = Record<string, unknown>;
 
-export const PULSE_WR_BUILD = "WR-15-shared";
+export type DataverseCall = {
+  ok: boolean;
+  status: number;
+  statusText: string;
+  headers: { get(name: string): string | null };
+  text: string;
+  buffer: ArrayBuffer;
+};
+
+/** Code App installs this so calls go through the Power Apps host to Live. */
+export type DataverseTransport = (path: string, init?: RequestInit) => Promise<DataverseCall>;
+
+let transportOverride: DataverseTransport | null = null;
+
+export function setDataverseTransport(transport: DataverseTransport | null) {
+  transportOverride = transport;
+}
 
 /** Entity-set name used by /api/data/v9.2/{set} */
 const ENTITY_SET: Record<string, string> = {
@@ -23,6 +41,8 @@ const ENTITY_SET: Record<string, string> = {
   cr603_chklst_department: "cr603_chklst_departmentses",
   erc_communications: "erc_communications",
   erc_communication: "erc_communications",
+  erc_esclationchains: "erc_esclationchains",
+  erc_esclationchain: "erc_esclationchains",
   erc_externalparties: "erc_externalparties",
   erc_externalparty: "erc_externalparties",
   erc_sla2s: "erc_sla2s",
@@ -51,6 +71,7 @@ const LOGICAL: Record<string, string> = {
   cr603_chklst_departments: "cr603_chklst_departments",
   cr603_chklst_department: "cr603_chklst_departments",
   erc_communications: "erc_communication",
+  erc_esclationchains: "erc_esclationchain",
   erc_externalparties: "erc_externalparty",
   erc_sla2s: "erc_sla2",
   erc_licenseandcontracts: "erc_licenseandcontract",
@@ -75,6 +96,8 @@ const PRIMARY_KEY: Record<string, string> = {
   team: "teamid",
   erc_communications: "erc_communicationid",
   erc_communication: "erc_communicationid",
+  erc_esclationchains: "erc_esclationchainid",
+  erc_esclationchain: "erc_esclationchainid",
   erc_externalparties: "erc_externalpartyid",
   erc_externalparty: "erc_externalpartyid",
   erc_licenseandcontracts: "erc_licenseandcontractid",
@@ -137,7 +160,7 @@ export function isDataverseHost() {
     || href.includes("pagetype=webresource");
 }
 
-function clientUrl() {
+function hostClientUrl() {
   for (const xrm of windowsWithXrm()) {
     try {
       const url = xrm.Utility?.getGlobalContext?.()?.getClientUrl?.();
@@ -145,6 +168,24 @@ function clientUrl() {
     } catch { /* ignore */ }
   }
   return window.location.origin.replace(/\/$/, "");
+}
+
+/** Always the live IT org. The Code App may be opened from another environment. */
+function clientUrl() {
+  return DATA_ENVIRONMENT.url.replace(/\/$/, "");
+}
+
+function hostIsDataOrg() {
+  try {
+    return new URL(hostClientUrl()).host.toLowerCase() === new URL(DATA_ENVIRONMENT.url).host.toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
+/** Xrm.WebApi talks to the page's org. Use it only when that page is already Live. */
+function canUseHostXrm() {
+  return !transportOverride && hostIsDataOrg();
 }
 
 function entitySet(table: string) {
@@ -202,51 +243,24 @@ type QueryOptions = {
   maxPageSize?: number;
 };
 
-const EMAIL_LIST_SELECT = [
-  "activityid",
-  "subject",
-  "sender",
-  "torecipients",
-  "createdon",
-  "senton",
-  "actualend",
-  "directioncode",
-  "conversationindex",
-  "attachmentcount",
-  "_regardingobjectid_value",
-  "_parentactivityid_value",
-];
-
-const EMAIL_THREAD_SELECT = [
-  ...EMAIL_LIST_SELECT,
-  "description",
-  "safedescription",
-];
-
-function slimOptions(table: string, options?: QueryOptions): QueryOptions {
-  const set = entitySet(table);
-  const next: QueryOptions = { ...(options || {}) };
-  if (set === "emails" && !next.select?.length && !next.expand) {
-    next.select = next.filter ? EMAIL_THREAD_SELECT : EMAIL_LIST_SELECT;
-    if (!next.filter && (!next.top || next.top > 80)) next.top = 80;
-  }
-  if (set === "activityparties" && (!next.top || next.top > 200)) next.top = 200;
-  return next;
+function odataEncode(value: string) {
+  return encodeURIComponent(value.trim()).replace(/%20/g, "+").replace(/'/g, "%27");
 }
 
+/** Same query string the Code App data client sends. */
 function queryString(options?: QueryOptions) {
   if (!options) return "";
   const parts: string[] = [];
-  if (options.select?.length) parts.push(`$select=${options.select.join(",")}`);
-  if (options.filter) parts.push(`$filter=${encodeURIComponent(options.filter)}`);
-  if (options.orderBy?.length) parts.push(`$orderby=${encodeURIComponent(options.orderBy.join(","))}`);
-  if (options.top) parts.push(`$top=${options.top}`);
-  if (options.skip) parts.push(`$skip=${options.skip}`);
+  if (options.select?.length) parts.push(`$select=${odataEncode(options.select.map((s) => s.trim()).join(","))}`);
+  if (options.filter) parts.push(`$filter=${odataEncode(options.filter)}`);
+  if (options.orderBy?.length) parts.push(`$orderby=${odataEncode(options.orderBy.map((s) => s.trim()).join(","))}`);
+  if (options.top !== undefined && options.top !== null) parts.push(`$top=${options.top}`);
+  if (options.skip !== undefined && options.skip !== null) parts.push(`$skip=${options.skip}`);
   if (options.expand) {
     const expand = Array.isArray(options.expand) ? options.expand.join(",") : options.expand;
     parts.push(`$expand=${expand}`);
   }
-  if (options.count) parts.push("$count=true");
+  if (options.count !== undefined && options.count !== null) parts.push(`$count=${options.count}`);
   return parts.length ? `?${parts.join("&")}` : "";
 }
 
@@ -274,12 +288,19 @@ function apiHeaders(extra?: Loose) {
   } as Record<string, string>;
 }
 
-async function parseError(res: Response) {
+function parseErrorText(status: number, statusText: string, text: string) {
   try {
-    const body = await res.json() as { error?: { message?: string } };
+    const body = JSON.parse(text) as { error?: { message?: string } };
     if (body?.error?.message) return new Error(body.error.message);
   } catch { /* ignore */ }
-  return new Error(`${res.status} ${res.statusText}`);
+  const detail = text.trim();
+  return new Error(detail ? `${status} ${statusText}: ${detail.slice(0, 300)}` : `${status} ${statusText}`);
+}
+
+function dataverseError(err: unknown) {
+  const base = xrmError(err);
+  if (base.message.includes(DATA_ENVIRONMENT.url)) return base;
+  return new Error(`${base.message} (reading ${DATA_ENVIRONMENT.name} at ${DATA_ENVIRONMENT.url})`);
 }
 
 function idFromEntityUrl(value?: string | null) {
@@ -288,10 +309,28 @@ function idFromEntityUrl(value?: string | null) {
   return match?.[1] || "";
 }
 
-async function webApi<T>(path: string, init?: RequestInit): Promise<{ res: Response; json?: T }> {
+function copyUpload(bytes: Uint8Array) {
+  const copy = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(copy).set(bytes);
+  return copy;
+}
+
+function callFromFetch(res: Response, buffer: ArrayBuffer): DataverseCall {
+  return {
+    ok: res.ok,
+    status: res.status,
+    statusText: res.statusText,
+    headers: { get: (name) => res.headers.get(name) },
+    text: new TextDecoder().decode(buffer),
+    buffer,
+  };
+}
+
+async function send(path: string, init?: RequestInit): Promise<DataverseCall> {
+  if (transportOverride) return transportOverride(path, init);
   const url = `${clientUrl()}/api/data/v9.2/${path.replace(/^\//, "")}`;
   const ctrl = new AbortController();
-  const timer = window.setTimeout(() => ctrl.abort(), 10000);
+  const timer = window.setTimeout(() => ctrl.abort(), 60000);
   try {
     const res = await fetch(url, {
       credentials: "include",
@@ -299,9 +338,7 @@ async function webApi<T>(path: string, init?: RequestInit): Promise<{ res: Respo
       signal: ctrl.signal,
       headers: apiHeaders(init?.headers as Loose),
     });
-    if (!res.ok) throw await parseError(res);
-    const text = await res.text();
-    return { res, json: text ? JSON.parse(text) as T : undefined };
+    return callFromFetch(res, await res.arrayBuffer());
   } catch (err) {
     if (err instanceof DOMException && err.name === "AbortError") {
       throw new Error(`Timed out loading ${path.split("?")[0]}`);
@@ -312,30 +349,30 @@ async function webApi<T>(path: string, init?: RequestInit): Promise<{ res: Respo
   }
 }
 
+async function webApi<T>(path: string, init?: RequestInit): Promise<{ res: DataverseCall; json?: T }> {
+  const res = await send(path, init);
+  if (!res.ok) throw parseErrorText(res.status, res.statusText, res.text);
+  const text = res.text.trim();
+  return { res, json: text ? JSON.parse(text) as T : undefined };
+}
+
 export function getClient(_info?: unknown) {
   return {
     async retrieveMultipleRecordsAsync<T>(table: string, options?: QueryOptions) {
-      const slim = slimOptions(table, options);
-      const tryQuery = async (query: string) => {
-        const { json } = await webApi<{ value?: Loose[] }>(`${entitySet(table)}${query}`);
-        return ok((json?.value || []).map((row) => withFormattedNames(row) as T));
-      };
+      const query = queryString(options);
       try {
-        return await tryQuery(queryString(slim));
+        const { json } = await webApi<Loose[] | { value?: Loose[] }>(`${entitySet(table)}${query}`);
+        const rows = Array.isArray(json) ? json : (json?.value || []);
+        return ok(rows.map((row) => withFormattedNames(row) as T));
       } catch (fetchErr) {
-        if (slim.select?.length) {
-          try {
-            const { select: _ignored, ...rest } = slim;
-            return await tryQuery(queryString(rest));
-          } catch { /* fall through */ }
-        }
+        if (!canUseHostXrm()) throw dataverseError(fetchErr);
         const api = getXrm()?.WebApi;
-        if (!api) throw xrmError(fetchErr);
+        if (!api) throw dataverseError(fetchErr);
         try {
-          const result = await api.retrieveMultipleRecords(logicalName(table), queryString(options), options?.maxPageSize);
+          const result = await api.retrieveMultipleRecords(logicalName(table), query, options?.maxPageSize);
           return ok((result.entities || []).map((row) => withFormattedNames(row) as T));
         } catch {
-          throw xrmError(fetchErr);
+          throw dataverseError(fetchErr);
         }
       }
     },
@@ -347,13 +384,14 @@ export function getClient(_info?: unknown) {
         const { json } = await webApi<Loose>(`${entitySet(table)}(${guid})${query}`);
         return ok(withFormattedNames(json || {}) as T);
       } catch (fetchErr) {
+        if (!canUseHostXrm()) throw dataverseError(fetchErr);
         const api = getXrm()?.WebApi;
-        if (!api) throw xrmError(fetchErr);
+        if (!api) throw dataverseError(fetchErr);
         try {
           const row = await api.retrieveRecord(logicalName(table), guid, query);
           return ok(withFormattedNames(row) as T);
         } catch {
-          throw xrmError(fetchErr);
+          throw dataverseError(fetchErr);
         }
       }
     },
@@ -376,8 +414,9 @@ export function getClient(_info?: unknown) {
         data[primaryKey(table)] = id;
         return { ...ok(data as TOut), id };
       } catch (fetchErr) {
+        if (!canUseHostXrm()) throw dataverseError(fetchErr);
         const api = getXrm()?.WebApi;
-        if (!api) throw xrmError(fetchErr);
+        if (!api) throw dataverseError(fetchErr);
         const created = await api.createRecord(logicalName(table), payload(record));
         const id = cleanId(created.id);
         return { ...ok({ ...record, [primaryKey(table)]: id } as TOut), id };
@@ -398,8 +437,9 @@ export function getClient(_info?: unknown) {
           return ok({ ...changedFields, [primaryKey(table)]: guid } as T);
         }
       } catch (fetchErr) {
+        if (!canUseHostXrm()) throw dataverseError(fetchErr);
         const api = getXrm()?.WebApi;
-        if (!api) throw xrmError(fetchErr);
+        if (!api) throw dataverseError(fetchErr);
         await api.updateRecord(logicalName(table), guid, payload(changedFields));
         return ok({ ...changedFields, [primaryKey(table)]: guid } as T);
       }
@@ -410,8 +450,9 @@ export function getClient(_info?: unknown) {
       try {
         await webApi(`${entitySet(table)}(${guid})`, { method: "DELETE" });
       } catch (fetchErr) {
+        if (!canUseHostXrm()) throw dataverseError(fetchErr);
         const api = getXrm()?.WebApi;
-        if (!api) throw xrmError(fetchErr);
+        if (!api) throw dataverseError(fetchErr);
         await api.deleteRecord(logicalName(table), guid);
       }
     },
@@ -422,14 +463,9 @@ export function getClient(_info?: unknown) {
 
     async uploadFileToRecord(table: string, id: string, columnName: string, fileName: string, data: Uint8Array) {
       const guid = cleanId(id);
-      const url = `${clientUrl()}/api/data/v9.2/${entitySet(table)}(${guid})/${columnName}`;
-      const ctrl = new AbortController();
-      const timer = window.setTimeout(() => ctrl.abort(), 60000);
       try {
-        const res = await fetch(url, {
+        const res = await send(`${entitySet(table)}(${guid})/${columnName}`, {
           method: "PATCH",
-          credentials: "include",
-          signal: ctrl.signal,
           headers: {
             Accept: "application/json",
             "Content-Type": "application/octet-stream",
@@ -437,42 +473,38 @@ export function getClient(_info?: unknown) {
             "OData-Version": "4.0",
             "x-ms-file-name": fileName,
           },
-          body: data,
+          body: copyUpload(data),
         });
-        if (!res.ok) throw await parseError(res);
+        if (!res.ok) throw parseErrorText(res.status, res.statusText, res.text);
         return ok(undefined);
       } catch (err) {
-        if (err instanceof DOMException && err.name === "AbortError") {
-          throw new Error("Timed out uploading the file");
-        }
-        throw xrmError(err);
-      } finally {
-        window.clearTimeout(timer);
+        throw dataverseError(err);
       }
+    },
+
+    async deleteFileOrImageFromRecord(table: string, id: string, columnName: string) {
+      const guid = cleanId(id);
+      await webApi(`${entitySet(table)}(${guid})/${columnName}`, { method: "DELETE" });
+      return ok(undefined);
+    },
+
+    async downloadImageFromRecord(table: string, id: string, columnName: string) {
+      return this.downloadFileFromRecord(table, id, columnName);
     },
 
     async downloadFileFromRecord(table: string, id: string, columnName: string) {
       const guid = cleanId(id);
-      const url = `${clientUrl()}/api/data/v9.2/${entitySet(table)}(${guid})/${columnName}/$value`;
-      const ctrl = new AbortController();
-      const timer = window.setTimeout(() => ctrl.abort(), 60000);
       try {
-        const res = await fetch(url, {
-          credentials: "include",
-          signal: ctrl.signal,
+        const res = await send(`${entitySet(table)}(${guid})/${columnName}/$value`, {
           headers: {
             Accept: "application/octet-stream",
             "OData-MaxVersion": "4.0",
             "OData-Version": "4.0",
           },
         });
-        if (res.ok) {
-          return ok(new Uint8Array(await res.arrayBuffer()));
-        }
+        if (res.ok && res.buffer.byteLength) return ok(new Uint8Array(res.buffer));
       } catch {
         /* File columns use /$value; attachment body falls back to the field. */
-      } finally {
-        window.clearTimeout(timer);
       }
       const loaded = await this.retrieveRecordAsync<Loose>(table, id, { select: [columnName] });
       return ok(loaded.data?.[columnName]);

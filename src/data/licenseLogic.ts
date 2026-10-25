@@ -1,4 +1,4 @@
-import type { DocRisk, License, Notice, NoticeType, Renewal } from "./types";
+import type { DocRisk, License, LicenseRenewalStatus, Notice, NoticeType, Renewal } from "./types";
 
 function todayIso() {
   return new Date().toISOString().slice(0, 10);
@@ -50,22 +50,30 @@ export function isThresholdReached(row: Pick<License, "expiry" | "reminderThresh
   return daysRemaining(row.expiry, today) <= thresholdOf(row);
 }
 
+/** Renewal status is derived. Users do not choose it. */
+export function renewalStatusFrom(
+  row: Pick<License, "expiry" | "status" | "done" | "reminderThreshold">,
+  today = todayIso(),
+): LicenseRenewalStatus {
+  if (isLicenseClosed(row)) return "Renewed";
+  const days = daysRemaining(row.expiry, today);
+  if (days < 0) return "Expired";
+  if (days <= thresholdOf(row)) return "In Progress";
+  return "Not Started";
+}
+
 export function applyLicenseFormulas(row: License, today = todayIso()): License {
   const days = daysRemaining(row.expiry, today);
   const closed = isLicenseClosed(row);
   const overdue = !closed && days < 0;
-  const status = closed ? "Renewed" : overdue ? "Expired" : row.status === "Expired" ? undefined : row.status;
-  let renewalStatus = row.renewalStatus || "Not Started";
-  if (closed) renewalStatus = "Renewed";
-  else if (overdue) renewalStatus = "Expired";
-  else if (renewalStatus === "Expired" || renewalStatus === "Renewed") renewalStatus = "In Progress";
+  const status = closed ? "Renewed" : overdue ? "Expired" : undefined;
   return {
     ...row,
     daysRemaining: days,
     risk: closed ? row.risk : riskFromDays(days),
     isOverdue: overdue,
     status,
-    renewalStatus,
+    renewalStatus: renewalStatusFrom(row, today),
     active: row.active !== false,
   };
 }

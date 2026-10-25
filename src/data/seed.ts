@@ -1,4 +1,4 @@
-import { MAILBOX_TEST, type ArchiveDoc, type AuditRow, type Communication, type IntakeEmail, type License, type Party, type SlaRule, type Store } from "./types";
+import { MAILBOX_TEST, type ArchiveDoc, type AuditRow, type Communication, type EscalationRule, type IntakeEmail, type License, type Party, type RoutingRule, type SlaRule, type Store } from "./types";
 import { dueFromCreated } from "./communicationLogic";
 
 const sla = (id: string, category: SlaRule["category"], priority: SlaRule["priority"], ackHours: number, resolveDays: number, basis: SlaRule["basis"]): SlaRule =>
@@ -58,6 +58,8 @@ const BU = [
 
 const recentOverdue = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
 const stillWithin = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+const nextLevelAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+const atLevel1 = { escalationStep: 1, lastEscalatedOn: new Date().toISOString(), nextEscalationOn: nextLevelAt };
 
 export const SEED: Store = {
   source: "local",
@@ -76,6 +78,20 @@ export const SEED: Store = {
     sla("S9", "Corporate", "Medium", 24, 10, "Working days"),
     sla("S10", "Partner", "Low", 48, 14, "Working days"),
   ],
+  routingRules: [
+    { id: "R1", name: "Government domain routing", basis: "Domain", value: "*.gov.eg", category: "Government", owner: "Ahmed Salah", priority: "Critical", active: true },
+    { id: "R2", name: "Legal notice keyword", basis: "Keyword", value: "legal notice, إخطار قانوني", category: "Legal", owner: "Heba Kamal", priority: "Critical", active: true },
+    { id: "R3", name: "Payer claims routing", basis: "Party", value: "MetLife Egypt, AXA Egypt", category: "Insurance", owner: "Nourhan Abdelrahman", priority: "High", active: true },
+    { id: "R4", name: "Licence renewal keyword", basis: "Keyword", value: "license renewal, تجديد ترخيص", category: "Regulatory", owner: "Mona ElSayed", priority: "High", active: false },
+    { id: "R5", name: "Accreditation body routing", basis: "Domain", value: "gahar.gov.eg", category: "Regulatory", owner: "Yasser Mahmoud", priority: "High", active: true },
+  ] satisfies RoutingRule[],
+  escalationRules: [
+    { id: "E1", trigger: "SLA breached", afterDays: 0, level: "L1", escalateTo: "Supervisor / BU Manager", channels: "Teams + Email + TMS", active: true },
+    { id: "E2", trigger: "L1 unresolved", afterDays: 2, level: "L2", escalateTo: "Executive (Dr. Bassam Farid)", channels: "Teams + Email", active: true },
+    { id: "E3", trigger: "Legal category breach", afterDays: 0, level: "L2", escalateTo: "Executive + Legal Affairs", channels: "Teams + Email + TMS", active: true },
+    { id: "E4", trigger: "Renewal overdue", afterDays: 7, level: "L1", escalateTo: "Department Head", channels: "Email + TMS", active: true },
+  ] satisfies EscalationRule[],
+  escalationChains: [],
   parties: [
     p("P1", "National Health Insurance Authority", "Government", "correspondence@nhia.gov.eg", "nhia.gov.eg", BU[3], "Ahmed Salah", "High", "Active", "Government Relations"),
     p("P2", "Egyptian Drug Authority", "Regulatory", "inspection@edaegypt.gov.eg", "edaegypt.gov.eg", BU[1], "Mona ElSayed", "High", "Active", "Government Relations"),
@@ -87,18 +103,19 @@ export const SEED: Store = {
     p("P8", "Nile Radiology Partners", "Partner", "contracts@nileradiology.com", "nileradiology.com", BU[0], "Karim ElBadry", "Low", "Inactive", "Medical Services"),
     p("P9", "Egyptian Tax Authority", "Government", "vat@eta.gov.eg", "eta.gov.eg", BU[3], "Sara Fouad", "High", "Active", "Finance"),
     p("P10", "General Authority for Healthcare Accreditation", "Regulatory", "cap@gahar.gov.eg", "gahar.gov.eg", BU[0], "Yasser Mahmoud", "High", "Active", "Government Relations"),
+    p("P11", "Cairo Medical Supplies", "Corporate", "contracts@cairomedical.com", "cairomedical.com", BU[3], "Sara Fouad", "Medium", "Draft", "Procurement"),
   ],
   comms: [
-    c("COM-2026-0412", "National Health Insurance Authority", "Government", "Facility re-accreditation site visit schedule", "Ahmed Salah", "Dr. Bassam Farid", "Critical", "2026-08-10", "In Progress", BU[0], { resp: "2026-08-12 16:20", respAction: "Acknowledged; documents in preparation", isAutomaticallyEscalated: true, isEscalated: true, escalatedBy: "System (Automatic Escalation)" }),
-    c("COM-2026-0411", "Egyptian Drug Authority", "Regulatory", "Pharmacy stock inspection findings response", "Mona ElSayed", "Yasser Mahmoud", "High", "2026-08-12", "In Progress", BU[1], { resp: "2026-08-12 15:40", respAction: "CAP submitted; evidence pending", isAutomaticallyEscalated: true, isEscalated: true, escalatedBy: "System (Automatic Escalation)" }),
+    c("COM-2026-0412", "National Health Insurance Authority", "Government", "Facility re-accreditation site visit schedule", "Ahmed Salah", "Dr. Bassam Farid", "Critical", "2026-08-10", "In Progress", BU[0], { resp: "2026-08-12 16:20", respAction: "Acknowledged; documents in preparation", isAutomaticallyEscalated: true, isEscalated: true, escalatedBy: "System (Automatic Escalation)", currentRecipient: "Level 1", ...atLevel1 }),
+    c("COM-2026-0411", "Egyptian Drug Authority", "Regulatory", "Pharmacy stock inspection findings response", "Mona ElSayed", "Yasser Mahmoud", "High", "2026-08-12", "In Progress", BU[1], { resp: "2026-08-12 15:40", respAction: "CAP submitted; evidence pending", isAutomaticallyEscalated: true, isEscalated: true, escalatedBy: "System (Automatic Escalation)", currentRecipient: "Level 1", ...atLevel1 }),
     c("COM-2026-0410", "MetLife Egypt", "Insurance", "Claim rejection batch — July settlement dispute", "Nourhan Abdelrahman", "Yasser Mahmoud", "High", "2026-08-13", "In Progress", BU[0], { resp: "2026-08-14 11:10", respAction: "Dispute file opened with payer", createdOn: recentOverdue, isOverdue: true, isEscalated: false }),
     c("COM-2026-0409", "Ministry of Health – Alexandria", "Government", "Annual operating licence documentation request", "Ahmed Salah", "Dr. Bassam Farid", "Critical", "2026-08-09", "Closed", BU[2], { closed: "2026-08-10T14:20:00", closedBy: "Ahmed Salah", closureComment: "Documents submitted; receipt archived", ev: 2, resp: "2026-08-09 14:10", respAction: "Documents submitted; receipt archived" }),
-    c("COM-2026-0408", "Zulficar & Partners Law Firm", "Legal", "Legal notice — patient compensation claim", "Heba Kamal", "Dr. Bassam Farid", "Critical", "2026-08-08", "In Progress", BU[1], { caseRef: "CASE-2026-017", resp: "2026-08-11 09:40", respAction: "Counsel engaged; formal reply drafted", isManuallyEscalated: true, isEscalated: true, escalatedBy: "Heba Kamal", escalationReason: "Counsel requested executive visibility" }),
+    c("COM-2026-0408", "Zulficar & Partners Law Firm", "Legal", "Legal notice — patient compensation claim", "Heba Kamal", "Dr. Bassam Farid", "Critical", "2026-08-08", "In Progress", BU[1], { caseRef: "CASE-2026-017", resp: "2026-08-11 09:40", respAction: "Counsel engaged; formal reply drafted", isManuallyEscalated: true, isEscalated: true, escalatedBy: "Heba Kamal", escalationReason: "Counsel requested executive visibility", currentRecipient: "Level 1", ...atLevel1 }),
     c("COM-2026-0407", "AXA Egypt", "Insurance", "Contract amendment — updated tariff annex", "Nourhan Abdelrahman", "Mona ElSayed", "Medium", "2026-08-14", "In Progress", BU[3], { createdOn: stillWithin, isOverdue: false, isEscalated: false }),
-    c("COM-2026-0406", "General Authority for Healthcare Accreditation", "Regulatory", "GAHAR corrective action plan submission", "Ahmed Salah", "Dr. Bassam Farid", "High", "2026-08-11", "In Progress", BU[0], { resp: "2026-08-11 12:15", respAction: "CAP v3 issued for review", isAutomaticallyEscalated: true, isEscalated: true, escalatedBy: "System (Automatic Escalation)" }),
+    c("COM-2026-0406", "General Authority for Healthcare Accreditation", "Regulatory", "GAHAR corrective action plan submission", "Ahmed Salah", "Dr. Bassam Farid", "High", "2026-08-11", "In Progress", BU[0], { resp: "2026-08-11 12:15", respAction: "CAP v3 issued for review", isAutomaticallyEscalated: true, isEscalated: true, escalatedBy: "System (Automatic Escalation)", currentRecipient: "Level 1", ...atLevel1 }),
     c("COM-2026-0405", "Bank Misr — Corporate Banking", "Corporate", "Payroll account mandate signatory update", "Sara Fouad", "Mona ElSayed", "Low", "2026-08-14", "In Progress", BU[3], { createdOn: stillWithin, isOverdue: false }),
     c("COM-2026-0404", "Egyptian Tax Authority", "Government", "VAT reconciliation query — Q2 2026", "Sara Fouad", "Mona ElSayed", "High", "2026-08-06", "Closed", BU[3], { closed: "2026-08-12T11:00:00", closedBy: "Sara Fouad", closureComment: "Reconciliation workings sent to ETA", ev: 1, resp: "2026-08-06 17:35", respAction: "Reconciliation workings sent to ETA" }),
-    c("COM-2026-0403", "Matouk Bassiouny", "Legal", "Employment dispute — former nursing staff", "Heba Kamal", "Dr. Bassam Farid", "High", "2026-07-29", "In Progress", BU[0], { caseRef: "CASE-2026-014", resp: "2026-08-03 11:05", respAction: "Statement of defence filed", isManuallyEscalated: true, isAutomaticallyEscalated: true, isEscalated: true, escalatedBy: "Heba Kamal" }),
+    c("COM-2026-0403", "Matouk Bassiouny", "Legal", "Employment dispute — former nursing staff", "Heba Kamal", "Dr. Bassam Farid", "High", "2026-07-29", "In Progress", BU[0], { caseRef: "CASE-2026-014", resp: "2026-08-03 11:05", respAction: "Statement of defence filed", isManuallyEscalated: true, isAutomaticallyEscalated: true, isEscalated: true, escalatedBy: "Heba Kamal", currentRecipient: "Level 1", ...atLevel1 }),
   ],
   docs: [
     d("DOC-2026-0071", "License", "Facility Operating Licence — Smouha", "Ministry of Health – Alexandria", "MOHP Alexandria Directorate", "2025-09-15", "2026-09-14", "High", "Ahmed Salah", BU[0], { notified: "2026-05-17 09:00" }),

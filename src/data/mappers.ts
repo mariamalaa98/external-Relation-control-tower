@@ -1,6 +1,6 @@
 import { formatDateTime } from "./communicationLogic";
 import { FLOWS } from "./flows";
-import type { ArchiveDoc, ArchiveType, AuditAction, AuditChannel, AuditRow, Category, CommStatus, Communication, DepartmentRef, DocRisk, DocType, License, LicenseRenewalStatus, Notice, NoticeResult, NoticeType, Party, Priority, Renewal, RenewalStatus, SlaRule, SlaState } from "./types";
+import type { ArchiveDoc, ArchiveType, AuditAction, AuditChannel, AuditRow, Category, CommStatus, Communication, DepartmentRef, DocRisk, DocType, EscalationChain, License, LicenseRenewalStatus, Notice, NoticeResult, NoticeType, Party, Priority, Renewal, RenewalStatus, SlaRule, SlaState } from "./types";
 import { applyLicenseFormulas, DEFAULT_REMINDER_THRESHOLD } from "./licenseLogic";
 import type { Erc_notifications } from "../generated/models/Erc_notificationsModel";
 import {
@@ -14,7 +14,8 @@ import {
   type Erc_communications,
 } from "../generated/models/Erc_communicationsModel";
 import type { Erc_externalparties } from "../generated/models/Erc_externalpartiesModel";
-import { Erc_externalpartiescr18c_extrnalparty_status } from "../generated/models/Erc_externalpartiesModel";
+import type { Erc_esclationchains } from "../generated/models/Erc_esclationchainsModel";
+import { Erc_externalpartiescr18c_extrnalparty_status, Erc_externalpartieserc_category } from "../generated/models/Erc_externalpartiesModel";
 import {
   Erc_licenseandcontractserc_documenttype,
   Erc_licenseandcontractserc_renewalstatus,
@@ -339,10 +340,17 @@ export function mapParty(row: Erc_externalparties): Party {
   const crit = cleanLabel(row.erc_defaultpriorityname || row.erc_priorityname);
   const unit = lookupRef(row, "erc_businessunit", row.erc_businessunitname);
   const dept = lookupRef(row, "erc_department", row.erc_departmentname);
+  const team = lookupRef(row, "erc_escalationteam", row.erc_escalationteamname);
+  const responsible = lookupRef(row, "erc_replyresponsible", row.erc_replyresponsiblename);
+  const category = asCategoryOptional(
+    row.erc_categoryname
+    || (row.erc_category != null ? Erc_externalpartieserc_category[row.erc_category as 1] : undefined),
+  );
   return {
     id: row.erc_externalpartyid,
     name: row.erc_partyname || "Unnamed party",
-    category: asCategory(row.erc_categoryname),
+    category: category || "Corporate",
+    categorySet: !!category,
     email: row.erc_officialemail || "",
     domain: (row.erc_domain || senderDomain(row.erc_officialemail || "")).toLowerCase(),
     bu: unit.name,
@@ -352,6 +360,26 @@ export function mapParty(row: Erc_externalparties): Party {
     owner: lookupDisplay(row, "erc_defaultowner", row.erc_defaultownername) || recordOwner(row, row.owneridname).name,
     criticality: crit === "Low" || crit === "Medium" ? crit : "High",
     status: asPartyStatus(row),
+    escalationTeam: team.name || undefined,
+    escalationTeamId: team.id,
+    responsibleTeam: responsible.name || undefined,
+    responsibleTeamId: responsible.id,
+  };
+}
+
+export function mapChain(row: Erc_esclationchains): EscalationChain {
+  const user = lookupRef(row, "erc_user", row.erc_username);
+  const team = lookupRef(row, "erc_team", row.erc_teamname);
+  return {
+    id: row.erc_esclationchainid,
+    name: row.erc_escalationchain || user.name || `Level ${row.erc_sequence || ""}`,
+    sequence: Number(row.erc_sequence) || 0,
+    waitHours: row.erc_waithours,
+    userId: user.id,
+    userName: user.name || undefined,
+    teamId: team.id,
+    teamName: team.name || undefined,
+    active: row.statecode !== 1,
   };
 }
 
@@ -391,7 +419,7 @@ function asFlag(value: unknown) {
   if (value === true || value === 1) return true;
   if (value === false || value === 0 || value == null || value === "") return false;
   const label = cleanLabel(String(value)).toLowerCase();
-  return label === "true" || label === "yes" || label === "escalated" || label === "overdue" || label === "1";
+  return label === "true" || label === "yes" || label === "escalated" || label === "overdue" || label === "1" || label.includes("overdue");
 }
 
 /** Dataverse Status Reason: Active = 1, Inactive = 2 */
@@ -432,6 +460,7 @@ export function mapComm(row: Erc_communications): Communication {
   const formulaCat = asCategoryOptional(row.erc_categoryfname || (row.erc_categoryf != null ? Erc_communicationserc_categoryf[row.erc_categoryf] : undefined));
   const formulaPri = asPriority(row.erc_priorityfname || (row.erc_priorityf != null ? Erc_communicationserc_priorityf[row.erc_priorityf] : undefined));
   const owner = recordOwner(row, row.owneridname);
+  const recipient = lookupRef(row, "erc_currentrecipient", row.erc_currentrecipientname);
   const mapped: Communication = {
     id: row.erc_id || displayCommId(row.erc_communicationid, row.createdon),
     recordId: row.erc_communicationid,
@@ -471,6 +500,11 @@ export function mapComm(row: Erc_communications): Communication {
     overdueFromColumn: true,
     escalatedBy: row.erc_escalatedbyname,
     escalationReason: row.erc_escalationreason,
+    escalationStep: Number(row.erc_escalationstep) || 0,
+    lastEscalatedOn: row.erc_lastescalatedon,
+    nextEscalationOn: row.erc_nextescalationon,
+    currentRecipient: recipient.name || undefined,
+    currentRecipientId: recipient.id,
   };
   return mapped;
 }

@@ -81,12 +81,20 @@
           "x-ms-read-only": true,
           "maxLength": 4000
         },
+        "erc_caserefrence": {
+          "type": "string",
+          "title": "CaseRefrence",
+          "x-ms-dataverse-attribute": "erc_caserefrence",
+          "x-ms-dataverse-type": "StringType",
+          "x-ms-schema-name": "erc_CaseRefrence",
+          "maxLength": 100
+        },
         "erc_categoryf": {
           "type": "string",
           "title": "Category F",
           "x-ms-dataverse-attribute": "erc_categoryf",
           "x-ms-dataverse-type": "PicklistType",
-          "x-ms-schema-name": "erc_CategoryF",
+          "x-ms-schema-name": "erc_Categoryf",
           "x-ms-read-only": true,
           "enum": [
             "Government",
@@ -114,7 +122,7 @@
           ],
           "x-ms-optionsetmetadataid": "1cb7920f-b29f-f111-b8dc-00224882d001",
           "x-ms-isGlobal": true,
-          "x-ms-optionsetdisplayname": "Category",
+          "x-ms-optionsetdisplayname": "Control Tower Category G",
           "x-ms-optionSetType": "Picklist"
         },
         "erc_categoryfname": {
@@ -210,6 +218,31 @@
           "x-ms-schema-name": "erc_communicationtypeName",
           "x-ms-read-only": true
         },
+        "erc_currentrecipient": {
+          "type": "string",
+          "title": "CurrentRecipient",
+          "x-ms-dataverse-attribute": "erc_currentrecipient",
+          "x-ms-dataverse-type": "LookupType",
+          "x-ms-schema-name": "erc_CurrentRecipient"
+        },
+        "erc_currentrecipientname": {
+          "type": "string",
+          "title": "erc_currentrecipientname",
+          "x-ms-dataverse-attribute": "erc_currentrecipientname",
+          "x-ms-dataverse-type": "StringType",
+          "x-ms-schema-name": "erc_CurrentRecipientName",
+          "x-ms-read-only": true,
+          "maxLength": 200
+        },
+        "erc_currentrecipientyominame": {
+          "type": "string",
+          "title": "erc_currentrecipientyominame",
+          "x-ms-dataverse-attribute": "erc_currentrecipientyominame",
+          "x-ms-dataverse-type": "StringType",
+          "x-ms-schema-name": "erc_CurrentRecipientYomiName",
+          "x-ms-read-only": true,
+          "maxLength": 200
+        },
         "erc_department": {
           "type": "string",
           "title": "Department",
@@ -282,6 +315,13 @@
           "x-ms-dataverse-type": "MemoType",
           "x-ms-schema-name": "erc_EscalationReason",
           "maxLength": 2000
+        },
+        "erc_escalationstep": {
+          "type": "string",
+          "title": "escalationstep",
+          "x-ms-dataverse-attribute": "erc_escalationstep",
+          "x-ms-dataverse-type": "IntegerType",
+          "x-ms-schema-name": "erc_escalationstep"
         },
         "erc_externalparty": {
           "type": "string",
@@ -387,6 +427,13 @@
           "x-ms-read-only": true,
           "maxLength": 4000
         },
+        "erc_lastescalatedon": {
+          "type": "string",
+          "title": "lastescalatedon",
+          "x-ms-dataverse-attribute": "erc_lastescalatedon",
+          "x-ms-dataverse-type": "DateTimeType",
+          "x-ms-schema-name": "erc_lastescalatedon"
+        },
         "erc_lifecyclestatus": {
           "type": "string",
           "title": "Lifecycle Status",
@@ -424,6 +471,13 @@
           "x-ms-schema-name": "erc_lifecyclestatusName",
           "x-ms-read-only": true
         },
+        "erc_nextescalationon": {
+          "type": "string",
+          "title": "nextescalationon",
+          "x-ms-dataverse-attribute": "erc_nextescalationon",
+          "x-ms-dataverse-type": "DateTimeType",
+          "x-ms-schema-name": "erc_nextescalationon"
+        },
         "erc_priorityf": {
           "type": "string",
           "title": "Priority F",
@@ -432,24 +486,21 @@
           "x-ms-schema-name": "erc_PriorityF",
           "x-ms-read-only": true,
           "enum": [
-            "Critical",
-            "High",
+            "High ",
             "Medium",
             "Low"
           ],
           "x-ms-enum-values": [
-            1,
-            2,
-            3,
-            4
+            125470000,
+            125470001,
+            125470002
           ],
           "Color": [
-            null,
-            null,
-            null,
-            null
+            "#ffa1a1",
+            "#c7c7c7",
+            "#c9faac"
           ],
-          "x-ms-optionsetmetadataid": "d9aad239-b29f-f111-b8dc-00224882d001",
+          "x-ms-optionsetmetadataid": "747132c0-1800-f111-8407-000d3a4b5321",
           "x-ms-isGlobal": true,
           "x-ms-optionsetdisplayname": "Priority",
           "x-ms-optionSetType": "Picklist"
@@ -479,7 +530,7 @@
         },
         "erc_slarule": {
           "type": "string",
-          "title": "SLA",
+          "title": "SLARule",
           "x-ms-dataverse-attribute": "erc_slarule",
           "x-ms-dataverse-type": "LookupType",
           "x-ms-schema-name": "erc_SLARule"

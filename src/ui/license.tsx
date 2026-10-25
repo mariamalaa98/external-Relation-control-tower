@@ -3,7 +3,6 @@ import {
   BUS,
   LICENSE_RENEWAL_STATUSES,
   type License,
-  type LicenseRenewalStatus,
   type Notice,
   type Renewal,
 } from "../data/types";
@@ -12,7 +11,6 @@ import {
   ME,
   TODAY,
   addDoc,
-  completeCycle,
   daysBetween,
   docLocked,
   docState,
@@ -23,15 +21,14 @@ import {
   markNoticeRead,
   matchesSearch,
   reopenDoc,
-  renewDoc,
   sameId,
   saveDoc,
-  sendRenewalNotice,
   uploadLicenseFile,
   useStore,
 } from "../data/store";
+import { noticeDuty, formatAuditStamp } from "../data/auditLogic";
 import { downloadBytes, mimeFromFileName } from "../data/emailAttachments";
-import { DataTable, FilterField, Kpi, Overlay, flagBadge, priBadge, statusBadge } from "./widgets";
+import { DataTable, FilterField, Kpi, Overlay, PageHead, flagBadge, priBadge, statusBadge } from "./widgets";
 import { ArchiveUploadForm } from "./archive";
 
 export function NotificationCenter({
@@ -48,12 +45,16 @@ export function NotificationCenter({
   const db = useStore();
   const [type, setType] = useState("All");
   const [read, setRead] = useState("Unread");
-  const filtered = useMemo(() => db.notices.filter((n) => {
-    const hit = `${n.title} ${n.documentName || ""} ${n.message || ""} ${n.owner}`.toLowerCase().includes(q.toLowerCase());
+  const [response, setResponse] = useState("All");
+  const withDuty = useMemo(() => db.notices.map((n) => ({ notice: n, duty: noticeDuty(n, db.docs, db.renewals) })), [db.notices, db.docs, db.renewals]);
+  const filtered = useMemo(() => withDuty.filter(({ notice: n, duty }) => {
+    const hit = `${n.title} ${n.documentName || ""} ${n.message || ""} ${n.owner} ${duty.respondedBy}`.toLowerCase().includes(q.toLowerCase());
     const typeOk = type === "All" || n.type === type;
     const readOk = read === "All" || (read === "Unread" ? !n.isRead : n.isRead);
-    return hit && typeOk && readOk;
-  }), [db.notices, q, type, read]);
+    const responseOk = response === "All" || (response === "Responded" ? duty.responded : !duty.responded);
+    return hit && typeOk && readOk && responseOk;
+  }), [withDuty, q, type, read, response]);
+  const unanswered = withDuty.filter((row) => !row.duty.responded).length;
 
   function openRelated(n: Notice) {
     const doc = db.docs.find((d) => d.recordId === n.documentId || d.id === n.documentId);
@@ -63,8 +64,7 @@ export function NotificationCenter({
   return (
     <>
       <div className="callout">
-        <b>Notification log</b> records reminder, expiry, and escalation events from the license/contract expiry monitor.
-        The app writes these rows to Dataverse. Email sending can be attached later with Power Automate.
+        <b>Notification log</b> records reminder, expiry, and escalation events. <b>Responded by</b> and <b>Responded on</b> show who acted and when. If there is no response, the <b>responsible person</b> stays accountable.
       </div>
       <div className="filters">
         <FilterField label="Search" className="ffld-search">
@@ -85,11 +85,18 @@ export function NotificationCenter({
             <option>Read</option>
           </select>
         </FilterField>
-        <span className="fnote">{filtered.length} shown · {db.notices.filter((n) => !n.isRead).length} unread</span>
+        <FilterField label="Response">
+          <select value={response} onChange={(e) => setResponse(e.target.value)}>
+            <option>All</option>
+            <option>No response</option>
+            <option>Responded</option>
+          </select>
+        </FilterField>
+        <span className="fnote">{filtered.length} shown · {unanswered} with no response</span>
       </div>
       <DataTable
-        cols={["Sent", "Type", "Title", "Document", "Result", "Owner", ""]}
-        rows={filtered.map((n) => ({
+        cols={["Sent", "Type", "Title", "Document", "Responsible", "Responded by", "Responded on", "Accountability", ""]}
+        rows={filtered.map(({ notice: n, duty }) => ({
           key: n.recordId || n.id,
           onClick: () => openRelated(n),
           cells: [
@@ -97,8 +104,10 @@ export function NotificationCenter({
             statusBadge(n.type),
             <>{n.isRead ? n.title : <b>{n.title}</b>}</>,
             n.documentName || "—",
-            flagBadge(n.result === "Sent", "Sent", "Failed"),
-            n.owner || "—",
+            duty.responded ? (duty.responsible || "—") : <span className="accountable" key="who">{duty.responsible || "Unassigned"}</span>,
+            duty.respondedBy || "—",
+            duty.respondedAt ? <span className="mono" key="at">{formatAuditStamp(duty.respondedAt) || formatDateTime(duty.respondedAt)}</span> : "—",
+            <span key="duty" className={`badge ${duty.responded ? "b-ok" : "b-bad"}`}>{duty.responded ? "Responded" : "No response"}</span>,
             n.isRead
               ? statusBadge("Read")
               : (
@@ -189,6 +198,127 @@ export function LicenseEscalationPanel({
   );
 }
 
+const RISK_ROWS = ["Critical", "High", "Medium", "Low"] as const;
+const RISK_BANDS = [
+  { id: 0, label: "Under 30 days", detail: "Expired or due soon", tone: "bad" },
+  { id: 1, label: "30 – 90 days", detail: "Inside the 90-day window", tone: "warn" },
+  { id: 2, label: "Over 90 days", detail: "Further out", tone: "ok" },
+] as const;
+
+function expiryBand(days: number) {
+  if (days < 30) return 0;
+  if (days <= 90) return 1;
+  return 2;
+}
+
+function daysLabel(days: number) {
+  if (days < 0) return `${Math.abs(days)} days overdue`;
+  if (days === 0) return "Expires today";
+  return `${days} day${days === 1 ? "" : "s"} left`;
+}
+
+export function RiskMatrix({
+  docs,
+  q,
+  setQ,
+  onOpen,
+}: {
+  docs: License[];
+  q: string;
+  setQ: (v: string) => void;
+  onOpen: (row: License) => void;
+}) {
+  const placed = useMemo(() => docs.map((doc) => {
+    const days = doc.daysRemaining ?? daysBetween(TODAY, doc.expiry);
+    return { doc, days, band: Number.isFinite(days) ? expiryBand(days) : -1 };
+  }).filter((row) => row.band >= 0), [docs]);
+
+  const filtered = useMemo(() => placed.filter(({ doc }) => matchesSearch(
+    q,
+    doc.documentNumber,
+    doc.name,
+    doc.party,
+    doc.owner,
+    doc.type,
+    doc.expiry,
+    doc.risk,
+  )), [placed, q]);
+
+  const missing = docs.length - placed.length;
+
+  return (
+    <>
+      <PageHead title="Risk Matrix" sub={`${filtered.length} documents by risk and time to expiry`} />
+      <div className="kpis">
+        {RISK_BANDS.map((band) => (
+          <Kpi
+            key={band.id}
+            acc={band.tone === "bad" ? "var(--bad)" : band.tone === "warn" ? "var(--warn)" : "var(--ok)"}
+            label={band.label}
+            value={filtered.filter((row) => row.band === band.id).length}
+            detail={band.detail}
+          />
+        ))}
+      </div>
+      <div className="filters">
+        <FilterField label="Search" className="ffld-search">
+          <input
+            type="search"
+            placeholder="Search name, party, owner"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            onInput={(e) => setQ(e.currentTarget.value)}
+          />
+        </FilterField>
+        <span className="fnote">{filtered.length} shown{missing ? ` · ${missing} without an expiry date` : ""}</span>
+      </div>
+      <div className="risk-matrix">
+        <div className="risk-head">
+          <div className="risk-corner" />
+          {RISK_BANDS.map((band) => (
+            <div className={`risk-colhead ${band.tone}`} key={band.id}>
+              <div className="l">{band.label}</div>
+              <div className="n">{filtered.filter((row) => row.band === band.id).length}</div>
+            </div>
+          ))}
+        </div>
+        {RISK_ROWS.map((risk) => (
+          <div className="risk-row" key={risk}>
+            <div className={`risk-rowhead risk-${risk.toLowerCase()}`}>{risk}</div>
+            {RISK_BANDS.map((band) => {
+              const list = filtered
+                .filter((row) => row.doc.risk === risk && row.band === band.id)
+                .sort((a, b) => a.days - b.days);
+              return (
+                <div className={`risk-cell${list.length ? "" : " empty"}`} key={band.id}>
+                  {list.length ? list.map(({ doc, days }) => (
+                    <button
+                      className="risk-card"
+                      type="button"
+                      key={doc.recordId || doc.id}
+                      onClick={() => onOpen(doc)}
+                    >
+                      <div className="nm">{doc.name}</div>
+                      <div className="meta">
+                        {statusBadge(doc.type)}
+                        <span>{doc.party || "No external party"}</span>
+                      </div>
+                      <div className="meta">
+                        <span className="mono">{doc.expiry}</span>
+                        <b>{daysLabel(days)}</b>
+                      </div>
+                    </button>
+                  )) : <span>None</span>}
+                </div>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
 export function RenewalTaskTable({ rows }: { rows: Renewal[] }) {
   if (!rows.length) return null;
   return (
@@ -225,6 +355,18 @@ function Field({ label, required, wide, hint, children }: { label: string; requi
   );
 }
 
+function hasEntered(value?: string) {
+  const text = String(value || "").trim();
+  return text.length > 0 && text !== "—" && text !== "-";
+}
+
+function formatDateOnly(value?: string) {
+  if (!value) return "";
+  const d = new Date(`${value.slice(0, 10)}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return value;
+  return d.toLocaleDateString("en-US");
+}
+
 function deptsForUnit(departments: { id: string; name: string; companyId?: string; companyName?: string }[], buId?: string, buName?: string) {
   if (!buId && !buName) return departments;
   const matched = departments.filter((d) =>
@@ -238,16 +380,12 @@ export function LicenseTracker({
   rows,
   q,
   setQ,
-  busy,
   onOpen,
-  onRenew,
 }: {
   rows: License[];
   q: string;
   setQ: (v: string) => void;
-  busy: boolean;
   onOpen: (row: License) => void;
-  onRenew: (row: License) => void;
 }) {
   const [typeFilter, setTypeFilter] = useState("All");
   const [lifeFilter, setLifeFilter] = useState("All");
@@ -263,7 +401,6 @@ export function LicenseTracker({
       r.documentNumber,
       r.name,
       r.party,
-      r.auth,
       r.owner,
       r.department,
       r.bu,
@@ -308,7 +445,7 @@ export function LicenseTracker({
         <FilterField label="Search" className="ffld-search">
           <input
             type="search"
-            placeholder="Search number, name, party, authority"
+            placeholder="Search number, name, party"
             value={q}
             onChange={(e) => setQ(e.target.value)}
             onInput={(e) => setQ(e.currentTarget.value)}
@@ -335,7 +472,7 @@ export function LicenseTracker({
         <span className="fnote">{filtered.length} shown</span>
       </div>
       <DataTable
-        cols={["Number", "Type", "Document", "External party", "Issuing authority", "Issue", "Expiry", "Days", "Risk", "Renewal", "Reminder", "Overdue", "Escalated", "Owner", "BU", "Department", "Action"]}
+        cols={["Number", "Type", "Document", "External party", "Issue", "Expiry", "Days", "Risk", "Renewal", "Reminder", "Overdue", "Escalated", "Owner", "BU", "Department"]}
         rows={filtered.map((r) => ({
           key: r.recordId || r.id,
           onClick: () => onOpen(r),
@@ -344,7 +481,6 @@ export function LicenseTracker({
             statusBadge(r.type),
             r.name,
             r.party || "—",
-            r.auth || "—",
             <span className="mono" key="iss">{r.issue || "—"}</span>,
             <span className="mono" key="exp">{r.expiry}</span>,
             r.daysRemaining ?? daysBetween(TODAY, r.expiry),
@@ -356,9 +492,6 @@ export function LicenseTracker({
             r.owner || "—",
             r.bu || "—",
             r.department || "—",
-            docLocked(r)
-              ? <>{statusBadge("Closed")} 🔒</>
-              : <button className="btn btn-outline btn-mini" type="button" disabled={busy} onClick={(e) => { e.stopPropagation(); onRenew(r); }}>Renew</button>,
           ],
         }))}
       />
@@ -380,8 +513,6 @@ export function LicenseCreateForm({ onCancel, onSave }: { onCancel: () => void; 
     const f = new FormData(e.currentTarget);
     const partyId = String(f.get("partyId") || "");
     const party = db.parties.find((p) => p.id === partyId);
-    const authId = String(f.get("authId") || "");
-    const auth = db.parties.find((p) => p.id === authId);
     const deptId = String(f.get("deptId") || "");
     const dept = db.departments.find((d) => d.id === deptId);
     const file = (e.currentTarget.elements.namedItem("file") as HTMLInputElement | null)?.files?.[0];
@@ -394,13 +525,11 @@ export function LicenseCreateForm({ onCancel, onSave }: { onCancel: () => void; 
         documentNumber: String(f.get("documentNumber") || "").trim() || undefined,
         party: party?.name || "",
         partyId: party?.id,
-        auth: auth?.name || String(f.get("auth") || "").trim(),
-        issuingAuthorityId: auth?.id,
+        auth: "",
         issue: String(f.get("issue") || ""),
         expiry: String(f.get("expiry") || ""),
         risk: "Medium",
         reminderThreshold: Number(f.get("threshold")) || DEFAULT_REMINDER_THRESHOLD,
-        renewalStatus: String(f.get("renewalStatus") || "Not Started") as LicenseRenewalStatus,
         renewalNotes: String(f.get("renewalNotes") || "").trim(),
         documentUrl: String(f.get("documentUrl") || "").trim(),
         owner: String(f.get("owner") || ME),
@@ -453,15 +582,9 @@ export function LicenseCreateForm({ onCancel, onSave }: { onCancel: () => void; 
             {db.parties.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
         </Field>
-        <Field label="Issuing authority">
-          <select name="authId" defaultValue="">
-            <option value="">—</option>
-            {db.parties.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-          </select>
-        </Field>
 
         <div className="mdf-sec">Dates and reminder</div>
-        <Field label="Issue date">
+        <Field label="Issue date" hint="The date printed on the license or contract. This is not the day the record is created.">
           <input name="issue" type="date" defaultValue={TODAY} />
         </Field>
         <Field label="Expiry date" required>
@@ -469,11 +592,6 @@ export function LicenseCreateForm({ onCancel, onSave }: { onCancel: () => void; 
         </Field>
         <Field label="Reminder threshold (days)" hint={`Default ${DEFAULT_REMINDER_THRESHOLD}. A renewal task is created when days remaining reach this value.`}>
           <input name="threshold" type="number" min={1} defaultValue={DEFAULT_REMINDER_THRESHOLD} />
-        </Field>
-        <Field label="Renewal status" required>
-          <select name="renewalStatus" defaultValue="Not Started">
-            {LICENSE_RENEWAL_STATUSES.map((s) => <option key={s}>{s}</option>)}
-          </select>
         </Field>
         <Field label="Renewal notes" wide>
           <input name="renewalNotes" maxLength={100} />
@@ -503,7 +621,7 @@ export function LicenseCreateForm({ onCancel, onSave }: { onCancel: () => void; 
           </select>
         </Field>
       </form>
-      {error ? <div className="note">{error}</div> : <div className="note">Days remaining and risk are calculated from the expiry date. Required Dataverse fields: type, expiry, risk, renewal status, active.</div>}
+      {error ? <div className="note">{error}</div> : <div className="note">Days remaining, risk, and renewal status are calculated from the expiry date. Renewal status starts as Not Started, becomes In Progress inside the reminder window, and Expired after the expiry date.</div>}
     </Overlay>
   );
 }
@@ -545,40 +663,51 @@ export function LicenseRecordForm({
     }
   }
 
+  const numberEntered = hasEntered(row.documentNumber) || hasEntered(row.id);
+  const nameEntered = hasEntered(row.name);
+  const typeEntered = hasEntered(row.type);
+  const partyEntered = hasEntered(row.party) || hasEntered(row.partyId);
+  const issueEntered = hasEntered(row.issue);
+  const expiryEntered = hasEntered(row.expiry);
+  const thresholdEntered = Number(row.reminderThreshold) > 0;
+  const urlEntered = hasEntered(row.documentUrl);
+  const fileEntered = hasEntered(row.currentDocumentName);
+  const buEntered = hasEntered(row.bu) || hasEntered(row.buId);
+  const deptEntered = hasEntered(row.department) || hasEntered(row.departmentId);
+
   async function save(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (locked) return;
     const f = new FormData(e.currentTarget);
-    const partyId = String(f.get("partyId") || "");
-    const party = db.parties.find((p) => p.id === partyId);
-    const authRaw = String(f.get("authId") || "");
-    const keepAuth = authRaw === "__label__";
-    const authId = keepAuth ? (row.issuingAuthorityId || "") : authRaw;
-    const auth = db.parties.find((p) => p.id === authId);
-    const deptRaw = String(f.get("deptId") || "");
-    const keepDept = deptRaw === "__label__";
-    const deptId = keepDept ? (row.departmentId || "") : deptRaw;
-    const dept = db.departments.find((d) => d.id === deptId);
-    await run("License saved", () => saveDoc(row.id, {
-      name: String(f.get("name") || row.name).trim(),
-      documentNumber: String(f.get("documentNumber") || "").trim() || row.documentNumber,
-      type: String(f.get("type") || row.type) as License["type"],
-      active: String(f.get("active")) !== "false",
-      partyId,
-      party: party?.name || "",
-      issuingAuthorityId: keepAuth ? row.issuingAuthorityId : authId,
-      auth: keepAuth ? row.auth : (auth?.name || ""),
-      issue: String(f.get("issue") || row.issue),
-      expiry: String(f.get("expiry") || row.expiry),
-      reminderThreshold: Number(f.get("threshold")) || DEFAULT_REMINDER_THRESHOLD,
-      renewalStatus: String(f.get("renewalStatus") || row.renewalStatus || "Not Started") as LicenseRenewalStatus,
-      renewalNotes: String(f.get("renewalNotes") || "").trim(),
-      documentUrl: String(f.get("documentUrl") || "").trim(),
-      bu: unitName,
-      buId,
-      department: keepDept ? (row.department || "") : (dept?.name || ""),
-      departmentId: keepDept ? row.departmentId : deptId,
-    }));
+    const patch: Partial<License> = {};
+    if (f.get("name") != null) patch.name = String(f.get("name") || row.name).trim();
+    if (f.get("documentNumber") != null) patch.documentNumber = String(f.get("documentNumber") || "").trim() || row.documentNumber;
+    if (f.get("type") != null) patch.type = String(f.get("type") || row.type) as License["type"];
+    if (f.get("active") != null) patch.active = String(f.get("active")) !== "false";
+    if (f.get("partyId") != null) {
+      const partyId = String(f.get("partyId") || "");
+      const party = db.parties.find((p) => p.id === partyId);
+      patch.partyId = partyId;
+      patch.party = party?.name || "";
+    }
+    if (f.get("issue") != null) patch.issue = String(f.get("issue") || row.issue);
+    if (f.get("expiry") != null) patch.expiry = String(f.get("expiry") || row.expiry);
+    if (f.get("threshold") != null) patch.reminderThreshold = Number(f.get("threshold")) || DEFAULT_REMINDER_THRESHOLD;
+    if (f.get("renewalNotes") != null) patch.renewalNotes = String(f.get("renewalNotes") || "").trim();
+    if (f.get("documentUrl") != null) patch.documentUrl = String(f.get("documentUrl") || "").trim();
+    if (f.get("bu") != null) {
+      patch.bu = unitName;
+      patch.buId = buId;
+    }
+    if (f.get("deptId") != null) {
+      const deptRaw = String(f.get("deptId") || "");
+      const keepDept = deptRaw === "__label__";
+      const deptId = keepDept ? (row.departmentId || "") : deptRaw;
+      const dept = db.departments.find((d) => d.id === deptId);
+      patch.department = keepDept ? (row.department || "") : (dept?.name || "");
+      patch.departmentId = keepDept ? row.departmentId : deptId;
+    }
+    await run("License saved", () => saveDoc(row.id, patch));
   }
 
   async function onUpload(file?: File) {
@@ -613,9 +742,6 @@ export function LicenseRecordForm({
       ) : (
         <>
           <button className="btn btn-primary" type="submit" form="license-form" disabled={saving}>Save</button>
-          <button className="btn btn-outline" type="button" disabled={disabled} onClick={() => void run(`${row.name} renewed`, () => renewDoc(row.id))}>Renew (+12 months)</button>
-          <button className="btn btn-outline" type="button" disabled={disabled} onClick={() => void run("Notification sent", () => sendRenewalNotice(row.id))}>Send notification</button>
-          <button className="btn btn-outline" type="button" disabled={disabled} onClick={() => void run("Completion recorded", () => completeCycle(row.id))}>Record completion</button>
           <button className="btn btn-ghost" type="button" onClick={onClose}>Close panel</button>
         </>
       )}
@@ -637,50 +763,41 @@ export function LicenseRecordForm({
       >
         <div className="mdf-sec">Identity</div>
         <Field label="Document number">
-          <input name="documentNumber" defaultValue={row.documentNumber || row.id} maxLength={100} disabled={disabled} />
+          {numberEntered ? <input readOnly value={row.documentNumber || row.id} /> : <input name="documentNumber" defaultValue="" maxLength={100} disabled={disabled} />}
         </Field>
         <Field label="Document type" required>
-          <select name="type" defaultValue={row.type} disabled={disabled}>
-            <option>License</option><option>Contract</option><option>Permit</option>
-          </select>
+          {typeEntered ? <input readOnly value={row.type} /> : (
+            <select name="type" defaultValue={row.type} disabled={disabled}>
+              <option>License</option><option>Contract</option><option>Permit</option>
+            </select>
+          )}
         </Field>
         <Field label="License and contract" required wide>
-          <input name="name" required defaultValue={row.name} maxLength={850} disabled={disabled} />
+          {nameEntered ? <input readOnly value={row.name} /> : <input name="name" required defaultValue="" maxLength={850} disabled={disabled} />}
         </Field>
         <Field label="Active" required>
-          <select name="active" defaultValue={row.active === false ? "false" : "true"} disabled={disabled}>
-            <option value="true">True</option>
-            <option value="false">False</option>
-          </select>
+          <input readOnly value={row.active === false ? "False" : "True"} />
         </Field>
         <Field label="Owner">
           <div className="lookup">{row.owner || "—"}</div>
         </Field>
-        <Field label="Record ID">
-          <input readOnly value={row.recordId || row.id} />
-        </Field>
 
         <div className="mdf-sec">Party</div>
         <Field label="External party">
-          <select name="partyId" defaultValue={row.partyId || ""} disabled={disabled}>
-            <option value="">None</option>
-            {db.parties.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-          </select>
-        </Field>
-        <Field label="Issuing authority">
-          <select name="authId" defaultValue={row.issuingAuthorityId || (row.auth ? "__label__" : "")} disabled={disabled}>
-            <option value="">None</option>
-            {row.auth && !row.issuingAuthorityId ? <option value="__label__">{row.auth}</option> : null}
-            {db.parties.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-          </select>
+          {partyEntered ? <input readOnly value={row.party || "—"} /> : (
+            <select name="partyId" defaultValue={row.partyId || ""} disabled={disabled}>
+              <option value="">None</option>
+              {db.parties.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          )}
         </Field>
 
         <div className="mdf-sec">Dates and risk</div>
-        <Field label="Issue date">
-          <input name="issue" type="date" defaultValue={row.issue} disabled={disabled} />
+        <Field label="Issue date" hint="The date printed on the license or contract. Created on is the day this record was added, and the system sets that separately.">
+          {issueEntered ? <input readOnly value={formatDateOnly(row.issue)} /> : <input name="issue" type="date" defaultValue="" disabled={disabled} />}
         </Field>
         <Field label="Expiry date" required>
-          <input name="expiry" type="date" required defaultValue={row.expiry} disabled={disabled} />
+          {expiryEntered ? <input readOnly value={formatDateOnly(row.expiry)} /> : <input name="expiry" type="date" required disabled={disabled} />}
         </Field>
         <Field label="Days remaining" hint="Calculated from expiry. Days to expiry is the Dataverse formula column.">
           <input readOnly value={String(left)} />
@@ -689,7 +806,7 @@ export function LicenseRecordForm({
           <div className="readonly-val">{priBadge(row.risk)}</div>
         </Field>
         <Field label="Reminder threshold (days)">
-          <input name="threshold" type="number" min={1} defaultValue={row.reminderThreshold || DEFAULT_REMINDER_THRESHOLD} disabled={disabled} />
+          {thresholdEntered ? <input readOnly value={String(row.reminderThreshold)} /> : <input name="threshold" type="number" min={1} defaultValue={DEFAULT_REMINDER_THRESHOLD} disabled={disabled} />}
         </Field>
         <Field label="Reminder sent">
           {flagBadge(!!row.reminderSent, "Yes", "No")}
@@ -702,19 +819,14 @@ export function LicenseRecordForm({
         </Field>
 
         <div className="mdf-sec">Renewal</div>
-        <Field label="Renewal status" required>
-          <select name="renewalStatus" defaultValue={row.renewalStatus || "Not Started"} disabled={disabled}>
-            {LICENSE_RENEWAL_STATUSES.map((s) => <option key={s}>{s}</option>)}
-          </select>
+        <Field label="Renewal status" hint="Set by the system from the expiry date and the reminder window.">
+          <div className="readonly-val">{statusBadge(row.renewalStatus || "Not Started")}</div>
         </Field>
         <Field label="Renewal SLA date" hint="Formula column — read only">
           <input readOnly value={row.renewalSlaDate ? formatDateTime(row.renewalSlaDate) : ""} placeholder="—" />
         </Field>
         <Field label="Renewal completed">
           <input readOnly value={row.done || ""} placeholder="—" />
-        </Field>
-        <Field label="Current renewal">
-          <div className="readonly-val">{row.currentRenewalName || row.currentRenewalId || "—"}</div>
         </Field>
         <Field label="Renewal notes" wide>
           <input name="renewalNotes" defaultValue={row.renewalNotes || ""} maxLength={100} disabled={disabled} />
@@ -755,10 +867,10 @@ export function LicenseRecordForm({
 
         <div className="mdf-sec">Current document</div>
         <Field label="Document URL" hint="Max 100 characters">
-          {locked ? (
+          {locked || urlEntered ? (
             row.documentUrl ? <a href={row.documentUrl} target="_blank" rel="noreferrer">{row.documentUrl}</a> : <div className="readonly-val">—</div>
           ) : (
-            <input name="documentUrl" defaultValue={row.documentUrl || ""} maxLength={100} disabled={disabled} />
+            <input name="documentUrl" defaultValue="" maxLength={100} disabled={disabled} />
           )}
         </Field>
         <Field label="Current document file" hint="Stored on the Dataverse file column. Upload after the record exists.">
@@ -768,7 +880,7 @@ export function LicenseRecordForm({
               <button className="btn btn-outline" type="button" disabled={saving} onClick={() => void onDownload()}>Download</button>
             ) : null}
           </div>
-          {!locked ? <input type="file" disabled={disabled} onChange={(e) => void onUpload(e.target.files?.[0])} /> : null}
+          {!locked && !fileEntered ? <input type="file" disabled={disabled} onChange={(e) => void onUpload(e.target.files?.[0])} /> : null}
         </Field>
         <Field label="Document Archive" wide hint="A copy stored on erc_documentarchive, separate from the current file column.">
           {relatedArchives.length ? (
@@ -800,21 +912,24 @@ export function LicenseRecordForm({
 
         <div className="mdf-sec">Organization</div>
         <Field label="Business unit">
-          <select name="bu" value={buId} onChange={(e) => setBuId(e.target.value)} disabled={disabled}>
-            <option value="">—</option>
-            {units.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
-          </select>
+          {buEntered ? <input readOnly value={row.bu || "—"} /> : (
+            <select name="bu" value={buId} onChange={(e) => setBuId(e.target.value)} disabled={disabled}>
+              <option value="">—</option>
+              {units.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+            </select>
+          )}
         </Field>
         <Field label="Department">
-          <select name="deptId" defaultValue={row.departmentId || (row.department ? "__label__" : "")} disabled={disabled}>
-            <option value="">—</option>
-            {row.department && !row.departmentId ? <option value="__label__">{row.department}</option> : null}
-            {depts.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
-          </select>
+          {deptEntered ? <input readOnly value={row.department || "—"} /> : (
+            <select name="deptId" defaultValue="" disabled={disabled}>
+              <option value="">—</option>
+              {depts.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+            </select>
+          )}
         </Field>
       </form>
       {locked ? <div className="note"><b>This renewal cycle is closed and read only.</b> Completion recorded {row.done}.</div> : (
-        <div className="note">Risk is calculated from days remaining. <b>Renew</b> extends expiry by twelve months and closes the open renewal task. Formula columns (days to expiry, renewal SLA date) are not written by this app.</div>
+        <div className="note">Values already saved are locked. Empty fields can still be filled, then use <b>Save</b>. Risk is calculated from days remaining. Formula columns (days to expiry, renewal SLA date) are not written by this app.</div>
       )}
       {archiveOpen ? (
         <ArchiveUploadForm

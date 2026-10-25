@@ -9,7 +9,8 @@
     "build:webresource": "vite build --config vite.webresource.config.ts",
     "build:all": "npm run build && npm run build:webresource",
     "preview": "vite preview",
-    "push": "power-apps push"
+    "push": "power-apps push",
+    "push:dtnew": "node scripts/push-dtnew.mjs"
   },
   "dependencies": {
     "@microsoft/power-apps": "^1.2.5",

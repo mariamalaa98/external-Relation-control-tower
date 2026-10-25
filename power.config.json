@@ -10,87 +10,16 @@
   "buildEntryPoint": "index.html",
   "localAppUrl": "http://localhost:5173/",
   "logoPath": "Default",
-  "connectionReferences": {},
-  "databaseReferences": {
-    "default.cds": {
-      "dataSources": {
-        "communications": {
-          "entitySetName": "erc_communications",
-          "logicalName": "erc_communication",
-          "isHidden": false
-        },
-        "externalpartymasters": {
-          "entitySetName": "erc_externalparties",
-          "logicalName": "erc_externalparty",
-          "isHidden": false
-        },
-        "licenseandcontracts": {
-          "entitySetName": "erc_licenseandcontracts",
-          "logicalName": "erc_licenseandcontract",
-          "isHidden": false
-        },
-        "slas": {
-          "entitySetName": "erc_sla2s",
-          "logicalName": "erc_sla2",
-          "isHidden": false
-        },
-        "businessunits": {
-          "entitySetName": "businessunits",
-          "logicalName": "businessunit",
-          "isHidden": false
-        },
-        "departments": {
-          "entitySetName": "cr603_chklst_departmentses",
-          "logicalName": "cr603_chklst_departments",
-          "isHidden": false
-        },
-        "teams": {
-          "entitySetName": "teams",
-          "logicalName": "team",
-          "isHidden": false
-        },
-        "users": {
-          "entitySetName": "systemusers",
-          "logicalName": "systemuser",
-          "isHidden": false
-        },
-        "renewals": {
-          "entitySetName": "erc_renewals",
-          "logicalName": "erc_renewal",
-          "isHidden": false
-        },
-        "emails": {
-          "entitySetName": "emails",
-          "logicalName": "email",
-          "isHidden": false
-        },
-        "activityparties": {
-          "entitySetName": "activityparties",
-          "logicalName": "activityparty",
-          "isHidden": false
-        },
-        "activitymimeattachments": {
-          "entitySetName": "activitymimeattachments",
-          "logicalName": "activitymimeattachment",
-          "isHidden": false
-        },
-        "notifications": {
-          "entitySetName": "erc_notifications",
-          "logicalName": "erc_notification",
-          "isHidden": false
-        },
-        "documentarchives": {
-          "entitySetName": "erc_documentarchives",
-          "logicalName": "erc_documentarchive",
-          "isHidden": false
-        },
-        "communicationaudits": {
-          "entitySetName": "erc_communicationaudits",
-          "logicalName": "erc_communicationaudit",
-          "isHidden": false
-        }
-      },
-      "environmentVariableName": ""
+  "connectionReferences": {
+    "136bafe8-ba6f-46d3-ac7e-5e3a63ebcef8": {
+      "id": "/providers/Microsoft.PowerApps/apis/shared_commondataserviceforapps",
+      "displayName": "Microsoft Dataverse",
+      "dataSources": [
+        "commondataserviceforapps"
+      ],
+      "authenticationType": "Oauth",
+      "dataSets": {}
     }
-  }
+  },
+  "databaseReferences": {}
 }

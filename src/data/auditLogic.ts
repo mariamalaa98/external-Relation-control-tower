@@ -23,11 +23,20 @@ export type CommAuditRow = {
   keyword: string;
   receivedAt?: string;
   responseAt?: string;
+  owner: string;
+  respondedBy: string;
   responseAction: string;
   status: string;
   within24: boolean;
   closed: boolean;
   source: Communication;
+};
+
+export type ResponseDuty = {
+  responsible: string;
+  respondedBy: string;
+  respondedAt?: string;
+  responded: boolean;
 };
 
 export type AuditEscalation = {
@@ -36,6 +45,8 @@ export type AuditEscalation = {
   title: string;
   subtitle: string;
   to: string;
+  by: string;
+  respondedBy: string;
   receivedAt?: string;
   responseAt?: string;
   lag: string;
@@ -218,7 +229,8 @@ export function commAuditRow(
   threads: Record<string, ThreadEmail[]>,
 ): CommAuditRow {
   const received = communicationReceivedAt(comm);
-  const response = firstResponseAt(comm, audits, threads);
+  const duty = communicationDuty(comm, audits, threads);
+  const response = duty.respondedAt ? parseStamp(duty.respondedAt) : undefined;
   const within24 = !!received && !!response && hoursBetween(received, response) <= RESPONSE_STANDARD_HOURS;
   return {
     key: comm.recordId || comm.id,
@@ -228,7 +240,9 @@ export function commAuditRow(
     criticality: criticalityOf(comm.pri),
     keyword: subjectKeyword(comm.emailSubject || comm.subj),
     receivedAt: received ? stampIso(received) : undefined,
-    responseAt: response ? stampIso(response) : undefined,
+    responseAt: duty.respondedAt,
+    owner: duty.responsible,
+    respondedBy: duty.respondedBy,
     responseAction: responseAction(comm, response),
     status: comm.status,
     within24,
@@ -274,6 +288,42 @@ function escalationAction(comm: Communication, responded: boolean) {
   return "";
 }
 
+export function communicationDuty(
+  comm: Communication,
+  audits: AuditRow[],
+  threads: Record<string, ThreadEmail[]>,
+): ResponseDuty {
+  const at = firstResponseAt(comm, audits, threads);
+  const who = audits.find((row) => sameComm(row, comm) && row.action === "Responded" && row.performedBy)?.performedBy
+    || (at ? comm.owner : "");
+  return {
+    responsible: comm.owner || "Unassigned",
+    respondedBy: who || "",
+    respondedAt: at ? stampIso(at) : undefined,
+    responded: !!at,
+  };
+}
+
+export function licenseDuty(doc: License, renewals: Renewal[]): ResponseDuty {
+  const completed = completedAt(doc, renewals);
+  const renewal = renewals.find((row) => sameDoc(row.documentId, doc));
+  return {
+    responsible: doc.owner || "Unassigned",
+    respondedBy: completed ? (renewal?.owner || doc.owner || "") : "",
+    respondedAt: completed || undefined,
+    responded: !!completed,
+  };
+}
+
+export function noticeDuty(notice: Notice, docs: License[], renewals: Renewal[]): ResponseDuty {
+  const doc = docs.find((row) => sameDoc(notice.documentId, row) || (!!notice.documentName && notice.documentName === row.name));
+  if (!doc) {
+    return { responsible: notice.owner || "Unassigned", respondedBy: "", responded: false };
+  }
+  const duty = licenseDuty(doc, renewals);
+  return { ...duty, responsible: notice.owner || duty.responsible };
+}
+
 export function communicationEscalations(
   comm: Communication,
   audits: AuditRow[],
@@ -282,13 +332,19 @@ export function communicationEscalations(
 ): AuditEscalation[] {
   if (!isEscalatedComm(comm)) return [];
   const received = escalationReceivedAt(comm, audits);
-  const response = responseAfter(firstResponseAt(comm, audits, threads), received);
+  const duty = communicationDuty(comm, audits, threads);
+  const response = responseAfter(duty.respondedAt ? parseStamp(duty.respondedAt) : undefined, received);
+  const escalatedBy = audits.find((row) => sameComm(row, comm) && row.action === "Escalated" && row.performedBy)?.performedBy
+    || comm.escalatedBy
+    || (comm.isAutomaticallyEscalated ? "System (Automatic Escalation)" : "System");
   const l1: AuditEscalation = {
     key: `${comm.recordId || comm.id}-L1`,
     level: "L1",
     title: comm.id,
     subtitle: comm.party || "",
     to: comm.sup || "Supervisor",
+    by: escalatedBy,
+    respondedBy: response ? duty.respondedBy : "",
     receivedAt: received ? stampIso(received) : undefined,
     responseAt: response ? stampIso(response) : undefined,
     lag: lagLabel(received, response),
@@ -311,6 +367,8 @@ export function communicationEscalations(
     title: comm.id,
     subtitle: comm.party || "",
     to: "Executive",
+    by: escalatedBy,
+    respondedBy: l2Response ? duty.respondedBy : "",
     receivedAt: l2Received ? stampIso(l2Received) : undefined,
     responseAt: l2Response ? stampIso(l2Response) : undefined,
     lag: lagLabel(l2Received, l2Response),
@@ -461,12 +519,16 @@ export function renewalEscalations(
   const received = renewalL1Received(doc, notices);
   const completed = parseStamp(row.completedAt);
   const response = responseAfter(completed, received);
+  const duty = licenseDuty(doc, renewals);
+  const escalatedBy = doc.escalatedBy || "System (Expiry Monitor)";
   const l1: AuditEscalation = {
     key: `${row.key}-L1`,
     level: "L1",
     title: doc.name,
     subtitle: [row.orgDepartment || row.department, doc.id].filter(Boolean).join(" · "),
     to: doc.owner || "Department",
+    by: escalatedBy,
+    respondedBy: response ? duty.respondedBy : "",
     receivedAt: received ? stampIso(received) : undefined,
     responseAt: response ? stampIso(response) : undefined,
     lag: lagLabel(received, response),
@@ -484,6 +546,8 @@ export function renewalEscalations(
     title: doc.name,
     subtitle: [row.orgDepartment || row.department, doc.id].filter(Boolean).join(" · "),
     to: "Executive",
+    by: escalatedBy,
+    respondedBy: l2Response ? duty.respondedBy : "",
     receivedAt: l2Due ? stampIso(l2Due) : undefined,
     responseAt: l2Response ? stampIso(l2Response) : undefined,
     lag: lagLabel(l2Due, l2Response),

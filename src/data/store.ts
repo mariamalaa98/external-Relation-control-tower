@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { SEED } from "./seed";
-import type { ArchiveDoc, ArchiveType, AuditAction, AuditChannel, AuditRow, BusinessUnitRef, Category, CommStatus, Communication, DepartmentRef, EmailAttachment, EvidenceFile, IntakeEmail, License, Notice, NoticeType, Party, Priority, Renewal, SlaRule, Store, ThreadEmail } from "./types";
+import type { ArchiveDoc, ArchiveType, AuditAction, AuditChannel, AuditRow, BusinessUnitRef, Category, CommStatus, Communication, DepartmentRef, EmailAttachment, EscalationRule, EvidenceFile, IntakeEmail, License, Notice, NoticeType, Party, Priority, Renewal, RoutingRule, SlaRule, Store, ThreadEmail } from "./types";
 import {
   addDays,
   asPriority,
@@ -22,6 +22,7 @@ import {
   auditChannelChoice,
   mapArchive,
   mapAudit,
+  mapChain,
   mapComm,
   mapDepartment,
   mapDoc,
@@ -30,6 +31,7 @@ import {
   mapRenewal,
   mapSla,
   needsEvidence,
+  priorityChoice,
   noticeResultChoice,
   noticeTypeChoice,
   nowStamp,
@@ -61,7 +63,7 @@ import {
   applyFormulaFields,
   automaticEscalationPatch,
   canAutoEscalate,
-  canManualEscalate,
+  canManualEscalate as communicationCanManualEscalate,
   closureFromFlow,
   dueFromCreated,
   extraCommFields,
@@ -73,16 +75,20 @@ import {
   emailBodyParts,
   normalizeSubject,
   manualEscalationPatch,
+  parseDate,
+  responsibleTeamOf,
   toIso,
+  withTeamNotification,
 } from "./communicationLogic";
 import { MAILBOX_MAHA, MAILBOX_PROD, CENTRAL_MAILBOX_ADDRESSES } from "./types";
 import { EmailsService } from "../generated/services/EmailsService";
 import { ActivitypartiesService } from "../generated/services/ActivitypartiesService";
 import { BusinessunitsService } from "../generated/services/BusinessunitsService";
 import { Cr603_chklst_departmentsesService } from "../generated/services/Cr603_chklst_departmentsesService";
-import { CENTRAL_MAILBOX_PARTY_ID, FLOWS, TO_RECIPIENT } from "./flows";
+import { FLOWS, TO_RECIPIENT } from "./flows";
 import type { Emails } from "../generated/models/EmailsModel";
 import { Erc_communicationsService } from "../generated/services/Erc_communicationsService";
+import { Erc_esclationchainsService } from "../generated/services/Erc_esclationchainsService";
 import { Erc_externalpartiesService } from "../generated/services/Erc_externalpartiesService";
 import { Erc_licenseandcontractsService } from "../generated/services/Erc_licenseandcontractsService";
 import { Erc_notificationsService } from "../generated/services/Erc_notificationsService";
@@ -105,7 +111,10 @@ let store: Store = {
   source: "local",
   ready: false,
   sla: [],
+  routingRules: [],
+  escalationRules: [],
   parties: [],
+  escalationChains: [],
   comms: [],
   docs: [],
   renewals: [],
@@ -139,6 +148,24 @@ export function useStore() {
 export function slaDays(cat: string, pri: string) {
   const rule = findSla(cat as Category, pri as Priority);
   return rule?.resolveDays ?? fallbackSlaDays(asPriority(pri));
+}
+
+export function matchRoutingRule(input: { from?: string; subject?: string; party?: string }): RoutingRule | undefined {
+  const from = (input.from || "").toLowerCase();
+  const subject = (input.subject || "").toLowerCase();
+  const party = (input.party || "").toLowerCase();
+  const domain = from.includes("@") ? (from.split("@").pop() || "") : "";
+  for (const rule of store.routingRules) {
+    if (!rule.active) continue;
+    const parts = rule.value.split(",").map((part) => part.trim().toLowerCase()).filter(Boolean);
+    if (rule.basis === "Domain" && parts.some((part) => {
+      const bare = part.replace(/^\*\./, "");
+      return !!bare && (domain === bare || domain.endsWith(`.${bare}`));
+    })) return rule;
+    if (rule.basis === "Keyword" && parts.some((part) => subject.includes(part))) return rule;
+    if (rule.basis === "Party" && parts.some((part) => party === part || party.includes(part))) return rule;
+  }
+  return undefined;
 }
 
 export function findSla(cat: Category, pri: Priority): SlaRule | undefined {
@@ -324,13 +351,14 @@ function applyArchiveMeta(comms: Communication[], archives: ArchiveDoc[], audits
     const logs = audits
       .filter((a) => sameId(a.communicationId, row.recordId) || a.communicationId === row.id)
       .sort((a, b) => String(a.performedOn || "").localeCompare(String(b.performedOn || "")));
-    return {
-      ...row,
-      ev: files.length || row.ev,
-      log: logs.length
-        ? logs.map((a) => ({ title: a.action, meta: [formatDateTime(a.performedOn), a.performedBy, a.details].filter(Boolean).join(" — ") }))
-        : row.log,
-    };
+    const baseLog = logs.length
+      ? logs.map((a) => ({ title: a.action, meta: [formatDateTime(a.performedOn), a.performedBy, a.details].filter(Boolean).join(" — ") }))
+      : row.log;
+    const notice = logs.find((a) => /responsible team/i.test(a.details || ""));
+    const next = { ...row, ev: files.length || row.ev, log: baseLog };
+    if (!notice) return next;
+    const team = (notice.details || "").replace(/.*responsible team\s*/i, "").trim();
+    return withTeamNotification(next, team ? { responsibleTeam: team } : undefined, parseDate(notice.performedOn || row.createdOn));
   });
 }
 
@@ -661,10 +689,16 @@ function partyNameEquals(a?: string, b?: string) {
   return !!(a && b && a.trim().toLowerCase() === b.trim().toLowerCase());
 }
 
+function withPartyCategory(row: Communication, party?: Party): Communication {
+  if (!party?.categorySet || row.categoryAssigned) return row;
+  return { ...row, cat: party.category, categoryAssigned: true };
+}
+
 function fillPartyDisplay(row: Communication, parties: Party[] = store.parties): Communication {
   const withOwner = (next: Communication, party?: Party) => {
-    if (String(next.owner || "").trim() || !party?.owner) return next;
-    return { ...next, owner: party.owner };
+    const named = withPartyCategory(next, party);
+    if (String(named.owner || "").trim() || !party?.owner) return named;
+    return { ...named, owner: party.owner };
   };
   if (row.partyId) {
     const match = parties.find((p) => sameId(p.id, row.partyId) || partyNameEquals(p.name, row.party));
@@ -808,13 +842,20 @@ function mapEmailToIntake(email: Emails, comms: Communication[], parties: Party[
   };
 }
 
-/** Emails sent to a central mailbox. Regarding is not required — the mailbox page lists every matching message. */
+/** Emails whose To line is the central mailbox. Cc does not count. */
+function sentToCentralMailbox(email: Emails) {
+  return isCentralMailbox(email.torecipients || email.to);
+}
+
+/** Emails sent to AndalusiaKSA-FU only. Regarding is not required — the mailbox page lists every matching message. */
 async function loadMailboxEmails(comms: Communication[], parties: Party[]): Promise<IntakeEmail[]> {
   const collected = new Map<string, Emails>();
+  const confirmedTo = new Set<string>();
 
   function addRows(rows: Emails[] | undefined) {
     for (const email of rows || []) {
-      if (email.activityid && (isCentralMailbox(email.torecipients || email.to) || collected.has(email.activityid))) {
+      if (!email.activityid) continue;
+      if (sentToCentralMailbox(email) || confirmedTo.has(email.activityid)) {
         collected.set(email.activityid, email);
       }
     }
@@ -825,7 +866,7 @@ async function loadMailboxEmails(comms: Communication[], parties: Party[]): Prom
       top: 250,
       orderBy: ["createdon desc"],
     });
-    addRows((incoming.data || []).filter((email) => isCentralMailbox(email.torecipients || email.to || email.cc)));
+    addRows(incoming.data);
   } catch { /* try activity parties next */ }
 
   const mailboxFilter = CENTRAL_MAILBOX_ADDRESSES
@@ -841,11 +882,10 @@ async function loadMailboxEmails(comms: Communication[], parties: Party[]): Prom
     }
   }
 
-  const partyIds = [
-    ...await activityIds(`participationtypemask eq ${TO_RECIPIENT} and (${mailboxFilter})`),
-    ...await activityIds(`_partyid_value eq ${CENTRAL_MAILBOX_PARTY_ID} and participationtypemask eq ${TO_RECIPIENT}`),
-  ];
-  const missing = [...new Set(partyIds)].filter((id) => !collected.has(id));
+  const addressedIds = [...new Set(await activityIds(`participationtypemask eq ${TO_RECIPIENT} and (${mailboxFilter})`))];
+  for (const id of addressedIds) confirmedTo.add(id);
+
+  const missing = addressedIds.filter((id) => !collected.has(id));
   for (let i = 0; i < missing.length; i += 20) {
     const chunk = missing.slice(i, i + 20);
     try {
@@ -853,7 +893,7 @@ async function loadMailboxEmails(comms: Communication[], parties: Party[]): Prom
         top: chunk.length,
         filter: chunk.map((id) => `activityid eq ${id}`).join(" or "),
       });
-      for (const email of result.data || []) collected.set(email.activityid, email);
+      addRows(result.data);
     } catch { /* skip this batch */ }
   }
 
@@ -1045,12 +1085,120 @@ function withTimeout<T>(work: Promise<T>, ms: number, label: string) {
   });
 }
 
+const ADMIN_RULES_KEY = "erc-admin-rules-v1";
+
+function savedAdminRules(): { routingRules: RoutingRule[]; escalationRules: EscalationRule[] } {
+  const fallback = {
+    routingRules: structuredClone(SEED.routingRules),
+    escalationRules: structuredClone(SEED.escalationRules),
+  };
+  try {
+    const raw = localStorage.getItem(ADMIN_RULES_KEY);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw) as { routingRules?: RoutingRule[]; escalationRules?: EscalationRule[] };
+    return {
+      routingRules: Array.isArray(parsed.routingRules) ? parsed.routingRules : fallback.routingRules,
+      escalationRules: Array.isArray(parsed.escalationRules) ? parsed.escalationRules : fallback.escalationRules,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function persistAdminRules() {
+  try {
+    localStorage.setItem(ADMIN_RULES_KEY, JSON.stringify({
+      routingRules: store.routingRules,
+      escalationRules: store.escalationRules,
+    }));
+  } catch {
+    /* the in-memory list still updates for this session */
+  }
+}
+
+export function addRoutingRule(input: Omit<RoutingRule, "id">) {
+  const row: RoutingRule = { ...input, id: `R${Date.now()}` };
+  store = { ...store, routingRules: [...store.routingRules, row] };
+  persistAdminRules();
+  emit();
+  return row;
+}
+
+export function setRoutingRuleActive(id: string, active: boolean) {
+  store = { ...store, routingRules: store.routingRules.map((row) => row.id === id ? { ...row, active } : row) };
+  persistAdminRules();
+  emit();
+}
+
+export function removeRoutingRule(id: string) {
+  store = { ...store, routingRules: store.routingRules.filter((row) => row.id !== id) };
+  persistAdminRules();
+  emit();
+}
+
+export function addEscalationRule(input: Omit<EscalationRule, "id">) {
+  const row: EscalationRule = { ...input, id: `E${Date.now()}` };
+  store = { ...store, escalationRules: [...store.escalationRules, row] };
+  persistAdminRules();
+  emit();
+  return row;
+}
+
+export function setEscalationRuleActive(id: string, active: boolean) {
+  store = { ...store, escalationRules: store.escalationRules.map((row) => row.id === id ? { ...row, active } : row) };
+  persistAdminRules();
+  emit();
+}
+
+export async function addSlaRule(input: Omit<SlaRule, "id" | "name"> & { name?: string }) {
+  const name = (input.name || `${input.category} — ${input.priority}`).trim();
+  const draft: SlaRule = {
+    id: `S${Date.now()}`,
+    name,
+    category: input.category,
+    priority: input.priority === "None" ? "Low" : input.priority,
+    ackHours: input.ackHours,
+    resolveDays: input.resolveDays,
+    basis: input.basis,
+    active: input.active,
+  };
+  if (store.source === "dataverse") {
+    const durationunit = draft.basis === "Calendar days" ? 789180001 : draft.basis === "Hours" ? 789180002 : 789180000;
+    const created = await Erc_sla2sService.create({
+      erc_name: clip100(name),
+      erc_active: draft.active,
+      erc_category: categoryChoice(draft.category),
+      erc_priority: priorityChoice(draft.priority),
+      erc_acknowledgementhours: String(draft.ackHours),
+      erc_sladuration: draft.resolveDays,
+      erc_durationunit: durationunit,
+      ...(draft.basis === "Hours" ? {} : { erc_daybasis: draft.basis === "Calendar days" ? 2 as const : 1 as const }),
+      erc_l1escalationtiming: 789180000,
+      statecode: 0,
+      statuscode: 1,
+    });
+    if (!created.data?.erc_sla2id) {
+      throw new Error(typeof created.error === "string" ? created.error : "SLA matrix row was not saved");
+    }
+    draft.id = created.data.erc_sla2id;
+    try {
+      const mapped = mapSla(created.data);
+      draft.name = mapped.name || draft.name;
+      draft.active = mapped.active;
+    } catch { /* keep the values just submitted */ }
+  }
+  store = { ...store, sla: [...store.sla, draft] };
+  emit();
+  return draft;
+}
+
 export async function hydrate(useDataverse: boolean) {
   if (!useDataverse) {
     const archives = structuredClone(SEED.archives || []);
     const audits = structuredClone(SEED.audits || []);
     store = {
       ...structuredClone(SEED),
+      ...savedAdminRules(),
       ready: true,
       source: "local",
       comms: applyArchiveMeta(structuredClone(SEED.comms).map((row) => applyFormulaFields(row)), archives, mergeAudits(audits, SEED.comms)),
@@ -1068,15 +1216,27 @@ export async function hydrate(useDataverse: boolean) {
   }
 
   const warnings: string[] = [];
+  function dataOrThrow<T>(result: { data?: T; success?: boolean; error?: unknown }) {
+    if (result?.success === false) {
+      const error = result.error;
+      const message = error instanceof Error
+        ? error.message
+        : error && typeof error === "object" && "message" in error
+          ? String((error as { message?: unknown }).message || "")
+          : "";
+      throw new Error(message || "Dataverse request failed");
+    }
+    return result?.data;
+  }
   async function loadTable<T, R>(
     name: string,
     work: Promise<{ data?: T[] }>,
     mapRow: (row: T) => R,
-    opts: { emptyOk?: boolean } = {},
+    opts: { emptyOk?: boolean; timeoutMs?: number } = {},
   ): Promise<R[]> {
     try {
-      const result = await withTimeout(work, 20000, name);
-      const raw = result.data || [];
+      const result = await withTimeout(work, opts.timeoutMs ?? 20000, name);
+      const raw = dataOrThrow(result) || [];
       if (!raw.length && !opts.emptyOk) warnings.push(`${name}: no records found in Dataverse.`);
       return raw.flatMap((row) => {
         try { return [mapRow(row)]; } catch { return []; }
@@ -1096,7 +1256,7 @@ export async function hydrate(useDataverse: boolean) {
     for (const attempt of attempts) {
       try {
         const result = await withTimeout(attempt(), 20000, name);
-        return result.data || [];
+        return dataOrThrow(result) || [];
       } catch (err) {
         lastErr = err instanceof Error ? err.message : String(err);
       }
@@ -1106,30 +1266,32 @@ export async function hydrate(useDataverse: boolean) {
   }
 
   async function loadDepartments(): Promise<DepartmentRef[]> {
-    const select = ["cr603_chklst_departmentsid", "cr603_department", "cr603_id", "statecode", "_cr603_company_value"];
+    const select = ["cr603_chklst_departmentsid", "cr603_department", "cr603_id", "statecode", "cr603_systemtag", "_cr603_company_value"];
+    const filter = "statecode eq 0 and cr603_systemtag eq 999740005";
     const attempts = [
-      { top: 500, select, filter: "statecode eq 0", orderBy: ["cr603_department asc"] },
-      { top: 500, select, orderBy: ["cr603_department asc"] },
-      { top: 500 },
+      { top: 500, select, filter, orderBy: ["cr603_department asc"] },
+      { top: 500, filter, orderBy: ["cr603_department asc"] },
     ];
+    let departmentError = "";
     for (const opts of attempts) {
       try {
         const result = await withTimeout(Cr603_chklst_departmentsesService.getAll({ ...opts }), 20000, "Departments");
-        const mapped = (result.data || []).flatMap((row) => {
+        return (dataOrThrow(result) || []).flatMap((row) => {
           const next = mapDepartment(row);
           return next ? [next] : [];
         });
-        if (mapped.length) return mapped;
-      } catch { /* try a simpler query */ }
+      } catch (err) {
+        departmentError = err instanceof Error ? err.message : String(err);
+      }
     }
-    warnings.push("Departments (cr603_chklst_departments) could not be loaded.");
+    warnings.push(`Departments (cr603_chklst_departments) could not be loaded${departmentError ? ` (${departmentError})` : ""}.`);
     return [];
   }
 
-  const [mappedParties, mappedSla, mappedCommsRaw, mappedDocs, mappedRenewals, mappedNotices, mappedArchives, mappedAudits, unitRows, departments] = await Promise.all([
+  const [mappedParties, mappedSla, mappedCommsRaw, mappedDocs, mappedRenewals, mappedNotices, mappedArchives, mappedAudits, unitRows, departments, mappedChains] = await Promise.all([
     loadTable("External parties", Erc_externalpartiesService.getAll({ top: 500, orderBy: ["erc_partyname asc"] }), (row) => row),
     loadTable("SLA rules", Erc_sla2sService.getAll({ top: 100 }), (row) => row),
-    loadTable("Communications", Erc_communicationsService.getAll({ top: 250, filter: COMM_ACTIVE_STATUSCODE_FILTER, orderBy: ["createdon desc"] }), (row) => row),
+    loadTable("Communications", Erc_communicationsService.getAll({ top: 5000, filter: COMM_ACTIVE_STATUSCODE_FILTER, orderBy: ["createdon desc"] }), (row) => row, { timeoutMs: 60000 }),
     loadTable("Licenses and contracts", Erc_licenseandcontractsService.getAll({ top: 250, orderBy: ["erc_expirydate asc"] }), (row) => row),
     loadTable("Renewals", Erc_renewalsService.getAll({ top: 250, orderBy: ["erc_duedate asc"] }), (row) => row, { emptyOk: true }),
     loadTableRetry("Notifications", [
@@ -1146,14 +1308,18 @@ export async function hydrate(useDataverse: boolean) {
       () => Erc_communicationauditsService.getAll({ top: 250, orderBy: ["erc_performedon desc"] }),
       () => Erc_communicationauditsService.getAll({ top: 250 }),
     ]),
-    loadTable("Business units", BusinessunitsService.getAll({ top: 500, orderBy: ["name asc"] }), (row) => row, { emptyOk: true }),
+    loadTable("Business units", BusinessunitsService.getAll({ top: 500, filter: "cr4f8_tag eq 'HR'", orderBy: ["name asc"] }), (row) => row, { emptyOk: true }),
     loadDepartments(),
+    loadTable("Escalation chain", Erc_esclationchainsService.getAll({ top: 500, filter: "statecode eq 0", orderBy: ["erc_sequence asc"] }), (row) => row, { emptyOk: true }),
   ]);
 
   const businessUnits: BusinessUnitRef[] = (unitRows as { businessunitid: string; name: string; isdisabled?: boolean }[])
     .filter((u) => u.businessunitid && u.name && u.isdisabled !== true)
     .map((u) => ({ id: u.businessunitid, name: u.name }));
 
+  const escalationChains = mappedChains.flatMap((row) => {
+    try { return [mapChain(row as Parameters<typeof mapChain>[0])]; } catch { return []; }
+  });
   const parties = mappedParties.flatMap((row) => {
     try { return [withOrgNames(mapParty(row as Parameters<typeof mapParty>[0]), businessUnits, departments)]; } catch { return []; }
   });
@@ -1192,7 +1358,9 @@ export async function hydrate(useDataverse: boolean) {
       : undefined,
     warnings,
     sla,
+    ...savedAdminRules(),
     parties,
+    escalationChains,
     comms: applyArchiveMeta(mappedComms.map((row) => fillPartyDisplay(row, parties)), archives, audits),
     docs,
     renewals,
@@ -1213,6 +1381,13 @@ export async function hydrate(useDataverse: boolean) {
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     store = { ...store, warnings: [...(store.warnings || []), `Central mailbox emails could not be loaded (${detail}).`] };
+    emit();
+  }
+  try {
+    await runLicenseMonitor();
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    store = { ...store, warnings: [...(store.warnings || []), `License expiry monitor could not run (${detail}).`] };
     emit();
   }
 }
@@ -1295,17 +1470,32 @@ async function findCreatedPartyId(name: string, email: string) {
   return undefined;
 }
 
-export async function addParty(input: Omit<Party, "id" | "status"> & { status?: Party["status"] }) {
-  const domain = String(input.domain || "")
+const EMAIL_DOMAIN = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/;
+
+export function normalizePartyDomain(value: string) {
+  return String(value || "")
     .trim()
     .replace(/^https?:\/\//i, "")
     .replace(/^www\./i, "")
     .replace(/\/.*$/, "")
-    .replace(/^@/, "")
+    .replace(/\.$/, "")
     .toLowerCase();
-  if (!domain || !domain.includes(".")) {
-    throw new Error("Domain is required (for example gmail.com or mohp.gov.eg), without @.");
-  }
+}
+
+/** Empty string when the value is an email domain such as gmail.com or mohp.gov.eg. */
+export function emailDomainError(value: string) {
+  const raw = String(value || "").trim();
+  if (!raw) return "Domain is required.";
+  if (raw.includes("@")) return "Enter the domain only, like gmail.com. Do not include the part before @.";
+  const domain = normalizePartyDomain(raw);
+  if (!EMAIL_DOMAIN.test(domain)) return "Domain must be the part after @ in an email, for example gmail.com or mohp.gov.eg.";
+  return "";
+}
+
+export async function addParty(input: Omit<Party, "id" | "status"> & { status?: Party["status"] }) {
+  const domainError = emailDomainError(input.domain);
+  if (domainError) throw new Error(domainError);
+  const domain = normalizePartyDomain(input.domain);
   const unit = store.businessUnits.find((u) => u.id === input.buId || u.name === input.bu);
   const party: Party = {
     ...input,
@@ -1391,12 +1581,51 @@ export async function addParty(input: Omit<Party, "id" | "status"> & { status?: 
   return party;
 }
 
+export async function acceptParty(id: string) {
+  const current = store.parties.find((p) => sameId(p.id, id) || p.id === id);
+  if (!current) throw new Error("External party not found");
+  if (current.status !== "Draft") throw new Error("Only a Draft external party can be accepted");
+  let next: Party = { ...current, status: "Active" };
+  if (store.source === "dataverse") {
+    if (!isGuid(current.id)) throw new Error("This party is not saved in Dataverse yet");
+    await Erc_externalpartiesService.update(current.id, {
+      cr18c_extrnalparty_status: partyStatusChoice("Active"),
+    });
+    const live = await Erc_externalpartiesService.get(current.id);
+    if (!live.data) throw new Error("The party was updated, but Dataverse did not return the record");
+    if (live.data.cr18c_extrnalparty_status !== partyStatusChoice("Active")) {
+      const mapped = mapParty(live.data);
+      throw new Error(`Status was not saved as Active. Dataverse still shows ${mapped.status}.`);
+    }
+    next = { ...current, ...mapParty(live.data), status: "Active" };
+  }
+  store = {
+    ...store,
+    parties: store.parties.map((p) => (sameId(p.id, current.id) || p.id === current.id) ? next : p),
+  };
+  emit();
+  return next;
+}
+
+function partyForComm(input: { party?: string; partyId?: string }) {
+  return store.parties.find((p) => (input.partyId && (p.id === input.partyId || sameId(p.id, input.partyId))) || (!!input.party && p.name === input.party));
+}
+
+export function canManualEscalate(row: Communication) {
+  return communicationCanManualEscalate(row, store.escalationChains, partyForComm(row)?.escalationTeamId);
+}
+
 export async function addComm(input: Omit<Communication, "id" | "recordId" | "log" | "ev" | "type" | "createdOn" | "isOverdue" | "isEscalated" | "isAutomaticallyEscalated" | "isManuallyEscalated"> & Partial<Communication>) {
+  const party = partyForComm(input);
+  if (!party || party.status !== "Active") {
+    throw new Error(party
+      ? `Communication was not created. ${party.name} is ${party.status}. Create is allowed only when the external party is Active.`
+      : "Communication was not created. An Active external party is required.");
+  }
   const createdOn = input.createdOn || toIso(new Date());
   const rec = input.rec || dateOnly(createdOn) || todayIso();
   const due = input.due || dueFromCreated(createdOn);
   const rule = findSla(input.cat, input.pri);
-  const party = store.parties.find((p) => p.name === input.party || p.id === input.partyId);
   const row: Communication = applyFormulaFields({
     ...input,
     id: nextLocalCommId(),
@@ -1452,10 +1681,11 @@ export async function addComm(input: Omit<Communication, "id" | "recordId" | "lo
   } else {
     row.recordId = row.id;
   }
-  store = { ...store, comms: [row, ...store.comms] };
+  const noticed = withTeamNotification(row, party, parseDate(createdOn));
+  store = { ...store, comms: [noticed, ...store.comms] };
   emit();
-  void persistAudit(row, "Communication created", row.subj, row.type === "Inbound" ? "Email" : "System");
-  return row;
+  void persistAudit(noticed, "Communication created", `Responsible team ${responsibleTeamOf(noticed, party)}`, noticed.type === "Inbound" ? "Email" : "System");
+  return noticed;
 }
 
 export async function addDoc(input: Omit<License, "id" | "recordId">, file?: File) {
@@ -1778,10 +2008,41 @@ export async function resolveUnmatchedEmail(mail: IntakeEmail, opts: { partyId?:
 export async function tickFormulas(now = new Date()) {
   if (store.source === "dataverse") {
     try {
-      const comms = await Erc_communicationsService.getAll({ top: 250, filter: COMM_ACTIVE_STATUSCODE_FILTER, orderBy: ["createdon desc"] });
-      store = { ...store, comms: await resolveMissingOwners((comms.data || []).filter(isActiveCommunicationRow).map(mapComm).map((row) => fillPartyDisplay(row))) };
+      const [partyRows, commRows, docRows, noticeRows] = await Promise.all([
+        Erc_externalpartiesService.getAll({ top: 500, orderBy: ["erc_partyname asc"] }),
+        Erc_communicationsService.getAll({ top: 5000, filter: COMM_ACTIVE_STATUSCODE_FILTER, orderBy: ["createdon desc"] }),
+        Erc_licenseandcontractsService.getAll({ top: 250, orderBy: ["erc_expirydate asc"] }),
+        Erc_notificationsService.getAll({ top: 250, orderBy: ["createdon desc"] }).catch(() => Erc_notificationsService.getAll({ top: 250 })),
+      ]);
+      const parties = (partyRows.data || []).flatMap((row) => {
+        try { return [withOrgNames(mapParty(row))]; } catch { return []; }
+      });
+      const partyList = parties.length ? parties : store.parties;
+      const comms = applyArchiveMeta(
+        await resolveMissingOwners((commRows.data || []).flatMap((row) => {
+          try {
+            if (!isActiveCommunicationRow(row)) return [];
+            return [withOrgNames(mapComm(row))];
+          } catch { return []; }
+        })),
+        store.archives,
+        store.audits,
+      ).map((row) => fillPartyDisplay(row, partyList));
+      const docs = (docRows.data || []).flatMap((row) => {
+        try { return [applyLicenseFormulas(withOrgNames(mapDoc(row)))]; } catch { return []; }
+      });
+      const notices = (noticeRows.data || []).flatMap((row) => {
+        try { return [mapNotice(row)]; } catch { return []; }
+      });
+      store = {
+        ...store,
+        parties: partyList,
+        comms: comms.length || !(commRows.data || []).length ? comms : store.comms,
+        docs: docs.length || !(docRows.data || []).length ? docs : store.docs,
+        notices: notices.length || !(noticeRows.data || []).length ? notices : store.notices,
+      };
       emit();
-    } catch { /* keep the last loaded formula values */ }
+    } catch { /* keep the last loaded figures */ }
     return;
   }
   store = {
@@ -1799,8 +2060,14 @@ export async function runAutomaticEscalation(now = new Date()) {
     return 0;
   }
   const refreshed = store.comms.map((c) => applyFormulaFields(c, now));
-  const targets = refreshed.filter((c) => canAutoEscalate(c));
-  const nextRows = targets.map((row) => applyFormulaFields(automaticEscalationPatch(row, now)));
+  const targets = refreshed.filter((c) => {
+    const party = partyForComm(c);
+    return canAutoEscalate(c, store.escalationChains, party?.escalationTeamId);
+  });
+  const nextRows = targets.map((row) => {
+    const party = partyForComm(row);
+    return applyFormulaFields(automaticEscalationPatch(row, now, store.escalationChains, party?.escalationTeamId));
+  });
   const byId = new Map(nextRows.map((r) => [r.recordId || r.id, r]));
   store = {
     ...store,
@@ -1819,22 +2086,31 @@ export async function escalateManually(
   const current = findComm(id);
   if (!current) throw new Error("Communication not found");
   if (!canManualEscalate(current)) {
-    throw new Error("This communication is already escalated. Manual escalation can run only once.");
+    throw new Error(current.status === "Closed"
+      ? "This communication is closed."
+      : "Every level on the escalation chain has already been notified.");
   }
   const reasonText = reason.trim();
   if (!reasonText) throw new Error("Escalation reason is required");
   const key = current.recordId || current.id;
   if (escalatingIds.has(key)) throw new Error("Escalation is already running for this record");
   escalatingIds.add(key);
+  const party = partyForComm(current);
+  const previousStep = current.escalationStep || 0;
   const next = applyFormulaFields(manualEscalationPatch(current, reasonText, by, {
     closedBy: extras.closedBy?.trim() || current.closedBy,
     closureComment: extras.closureComment?.trim() || current.closureComment,
+    chains: store.escalationChains,
+    teamId: party?.escalationTeamId,
   }));
   replaceComm(next);
   try {
+    if (current.isManuallyEscalated) {
+      await persistComm(current, { erc_ismanuallyescalated: false });
+    }
     await persistComm(next, {
-      erc_ismanuallyescalated: yesNoChoice(true),
-      erc_isescalated: yesNoChoice(true),
+      erc_ismanuallyescalated: true,
+      erc_isescalated: true,
       erc_escalationreason: next.escalationReason,
     });
     if (next.closureComment || extras.closedBy) {
@@ -1847,16 +2123,20 @@ export async function escalateManually(
     }
     void persistAudit(next, "Manually escalated", reasonText);
     if (store.source === "dataverse" && next.recordId) {
-      const fresh = await commFromDataverse(next.recordId, next);
+      let fresh = await commFromDataverse(next.recordId, next);
+      for (let attempt = 0; attempt < 4 && (fresh.escalationStep || 0) <= previousStep; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        fresh = await commFromDataverse(next.recordId, next);
+      }
+      const advanced = (fresh.escalationStep || 0) > previousStep;
       return replaceComm({
-        ...fresh,
+        ...(advanced ? fresh : next),
         closedBy: fresh.closedBy || next.closedBy,
         closureComment: fresh.closureComment || next.closureComment,
         isManuallyEscalated: true,
         isEscalated: true,
-        isAutomaticallyEscalated: false,
-        escalationReason: next.escalationReason,
-        escalatedBy: next.escalatedBy,
+        escalationReason: fresh.escalationReason || next.escalationReason,
+        escalatedBy: fresh.escalatedBy || next.escalatedBy,
       });
     }
     return next;
@@ -2346,6 +2626,6 @@ export async function runLicenseMonitor() {
 export const ME = "Mariam Alaa";
 export { addDays, daysBetween, slaState, docState, todayIso, nowStamp, needsEvidence, applyFormulaFields, summarizeMonitor, dateOnly };
 export { communicationDeepLink, communicationPlayUrl, parseCommunicationDeepLink, copyText, COMM_DEEP_LINK_PARAM, cleanRecordGuid, setHostQueryParams, syncHostQueryFromWindow } from "./deeplink";
-export { canAutoEscalate, canManualEscalate, isAlreadyEscalated, formatDateTime, overdueLabel, escalatedLabel, yesNo, OVERDUE_HOURS } from "./communicationLogic";
+export { canAutoEscalate, isAlreadyEscalated, formatDateTime, overdueLabel, escalatedLabel, yesNo, OVERDUE_HOURS } from "./communicationLogic";
 export { DEFAULT_REMINDER_THRESHOLD, thresholdOf, unreadNotices } from "./licenseLogic";
 export const TODAY = todayIso();

@@ -3,9 +3,7 @@ import {
   BUS,
   CATS,
   COMM_STATUSES,
-  MAILBOX_MAHA,
   MAILBOX_PROD,
-  MAILBOX_TEST,
   OWNERS,
   PRIS,
   SUPS,
@@ -19,7 +17,10 @@ import {
   ME,
   TODAY,
   addComm,
+  acceptParty,
   addParty,
+  emailDomainError,
+  normalizePartyDomain,
   closeComm,
   commLocked,
   daysBetween,
@@ -31,7 +32,6 @@ import {
   formatDateTime,
   refresh,
   reopenComm,
-  renewDoc,
   respondToComm,
   routeEmail,
   runAutomaticEscalation,
@@ -42,6 +42,7 @@ import {
   unreadNotices,
   useStore,
   matchesSearch,
+  matchRoutingRule,
   partyOrgOptions,
   partyMatchesOrg,
   commMatchesOrg,
@@ -50,9 +51,11 @@ import {
   parseCommunicationDeepLink,
 } from "./data/store";
 import { DataTable, FilterField, Kpi, Overlay, OrgFilterFields, PageHead, catBadge, flagBadge, priBadge, statusBadge } from "./ui/widgets";
-import { CloseCommForm, CommRecordForm, EscalationCenter } from "./ui/communication";
-import { LicenseCreateForm, LicenseEscalationPanel, LicenseRecordForm, LicenseTracker, NotificationCenter, RenewalTaskTable } from "./ui/license";
-import { ArchiveUploadForm, DocumentArchiveScreen } from "./ui/archive";
+import { CloseCommForm, CommRecordForm } from "./ui/communication";
+import { LicenseCreateForm, LicenseRecordForm, LicenseTracker, NotificationCenter, RenewalTaskTable, RiskMatrix } from "./ui/license";
+import { AdminConfiguration } from "./ui/admin";
+import { SystemEscalationCenter } from "./ui/escalation";
+import { DocumentArchiveScreen } from "./ui/archive";
 import { CommunicationAuditScreen, NotificationAuditScreen } from "./ui/audit";
 
 const NAV = [
@@ -68,8 +71,10 @@ const NAV = [
   { area: "comp", group: "LICENSES & CONTRACTS", items: [
     { id: "licenses", ico: "📄", text: "License & Contract Tracker" },
     { id: "renewals", ico: "▦", text: "Renewal Calendar" },
+    { id: "risk", ico: "▦", text: "Risk Matrix" },
   ]},
   { area: "comp", group: "REFERENCE DATA", items: [
+    { id: "draftParties", ico: "✓", text: "Draft Parties" },
     { id: "parties", ico: "🏛", text: "External Party Master" },
     { id: "archive", ico: "🗂", text: "Document Archive" },
   ]},
@@ -85,7 +90,6 @@ const NAV = [
   ]},
   { area: "gov", group: "AUDIT", items: [
     { id: "auditComm", ico: "🔍", text: "Communication Audit" },
-    { id: "auditNotif", ico: "🔍", text: "Notification Audit" },
   ]},
 ] as const;
 
@@ -169,7 +173,6 @@ type Modal =
   | { kind: "respond"; comm: Communication }
   | { kind: "close"; comm: Communication }
   | { kind: "reopen"; comm: Communication }
-  | { kind: "evidence"; comm: Communication }
   | { kind: "escalate"; comm: Communication }
   | { kind: "escalateDoc"; doc: License }
   | { kind: "docDetail"; doc: License }
@@ -185,18 +188,25 @@ export default function App() {
   const [modal, setModal] = useState<Modal>(null);
   const [drawer, setDrawer] = useState<Communication | null>(null);
   const [calMonth, setCalMonth] = useState(() => TODAY.slice(0, 7));
-  const [calView, setCalView] = useState<"cal" | "list" | "risk">("cal");
+  const [calView, setCalView] = useState<"cal" | "list">("cal");
+  const [noticeView, setNoticeView] = useState<"log" | "audit">("log");
   const [orgBu, setOrgBu] = useState("All");
   const [orgDept, setOrgDept] = useState("All");
-  const [escTab, setEscTab] = useState<"comms" | "licenses">("comms");
   const [navOpen, setNavOpen] = useState(false);
   const lastDeepLink = useRef("");
 
   useEffect(() => {
     const id = window.setInterval(() => {
       void tickFormulas();
-    }, 60000);
-    return () => window.clearInterval(id);
+    }, 30000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void tickFormulas();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, []);
 
   useEffect(() => {
@@ -272,17 +282,8 @@ export default function App() {
     () => db.docs.filter((d) => docMatchesOrg(d, orgBu, orgDept, db.parties, db.businessUnits, db.departments)),
     [db.docs, db.parties, db.businessUnits, db.departments, orgBu, orgDept],
   );
-  const scopedIntake = useMemo(
-    () => db.intake.filter((x) => {
-      if (orgBu === "All" && orgDept === "All") return true;
-      const party = db.parties.find((p) => p.name === x.match);
-      return !!party && partyMatchesOrg(party, orgBu, orgDept, db.businessUnits, db.departments);
-    }),
-    [db.intake, db.parties, db.businessUnits, db.departments, orgBu, orgDept],
-  );
-
   const openComms = scopedComms.filter((c) => c.status !== "Closed");
-  const pending = scopedComms.filter((c) => c.status !== "Closed" && (c.status === "In Progress" || !c.isEscalated));
+  const pending = db.comms.filter((c) => c.status !== "Closed" && (c.status === "In Progress" || !c.isEscalated));
   const breached = openComms.filter((c) => c.isOverdue || slaState(c) === "Breached");
   const expiring = scopedDocs.filter((d) => {
     const s = docState(d);
@@ -332,7 +333,6 @@ export default function App() {
           ))}
         </div>
         <div className="hdr-right">
-          <span className="hdr-icon" title="New communication" onClick={() => setModal({ kind: "comm" })}>+</span>
           <div className="avatar">MA</div>
         </div>
       </header>
@@ -363,7 +363,7 @@ export default function App() {
           ))}
         </aside>
         <main>
-          {!LATER.includes(screen) && screen !== "admin" ? (
+          {!LATER.includes(screen) && screen !== "admin" && !["pending", "intake", "tracker", "legal"].includes(screen) ? (
             <div className="filters org-filters">
               <OrgFilterFields
                 businessUnits={orgOpts.businessUnits}
@@ -447,9 +447,7 @@ export default function App() {
 
           {screen === "pending" && (
             <>
-              <PageHead title="My Pending Actions" sub={`${pending.length} in progress or not escalated`}>
-                <button className="btn btn-primary" type="button" onClick={() => setModal({ kind: "comm" })}>New Communication</button>
-              </PageHead>
+              <PageHead title="My Pending Actions" sub={`${pending.length} in progress or not escalated`} />
               <CommTable rows={pending} q={q} setQ={setQ} onOpen={setDrawer} />
             </>
           )}
@@ -459,7 +457,7 @@ export default function App() {
               q={q}
               setQ={setQ}
               busy={busy}
-              mails={scopedIntake}
+              mails={db.intake}
               onProcess={(mail) => setModal({ kind: "process", mail })}
               onRefresh={() => run("Mailbox refreshed", refresh)}
             />
@@ -467,18 +465,16 @@ export default function App() {
 
           {screen === "tracker" && (
             <>
-              <PageHead title="Communication Tracker" sub={`${scopedComms.length} records`}>
-                <button className="btn btn-primary" type="button" onClick={() => setModal({ kind: "comm" })}>New Communication</button>
-              </PageHead>
-              <CommTable rows={scopedComms} q={q} setQ={setQ} onOpen={setDrawer} />
+              <PageHead title="Communication Tracker" sub={`${db.comms.length} records`} />
+              <CommTable rows={db.comms} q={q} setQ={setQ} onOpen={setDrawer} />
             </>
           )}
 
           {screen === "legal" && (
             <>
-              <PageHead title="Legal Cases Notification" sub="Communications where Category = Legal" />
+              <PageHead title="Legal Cases Notification" sub="Communications whose category is Legal, including a blank category when the external party is Legal" />
               <CommTable
-                rows={scopedComms.filter((c) => c.cat === "Legal")}
+                rows={db.comms.filter((c) => c.cat === "Legal")}
                 q={q}
                 setQ={setQ}
                 onOpen={setDrawer}
@@ -489,58 +485,80 @@ export default function App() {
 
           {screen === "escalation" && (
             <>
-              <PageHead title="Escalation Center" sub="Communications overdue flags · License expiry monitor">
-                <div className="toggle">
-                  <button className={escTab === "comms" ? "on" : ""} type="button" onClick={() => setEscTab("comms")}>Communications</button>
-                  <button className={escTab === "licenses" ? "on" : ""} type="button" onClick={() => setEscTab("licenses")}>Licenses &amp; renewals</button>
-                </div>
-                {escTab === "comms" ? (
-                  <button
-                    className="btn btn-outline"
-                    type="button"
-                    disabled={busy}
-                    onClick={() => run(
-                      db.source === "dataverse" ? "Refreshed from Dataverse (auto flow runs every 10 minutes)" : "Automatic escalation ran",
-                      runAutomaticEscalation,
-                    )}
-                  >
-                    {db.source === "dataverse" ? "Refresh from auto flow" : "Run automatic escalation"}
-                  </button>
-                ) : (
-                  <button
-                    className="btn btn-outline"
-                    type="button"
-                    disabled={busy}
-                    onClick={() => run("Expiry monitor ran", async () => summarizeMonitor(await runLicenseMonitor()))}
-                  >
-                    Run expiry monitor
-                  </button>
-                )}
-              </PageHead>
-              {escTab === "comms" ? (
-                <EscalationCenter
-                  q={q}
-                  setQ={setQ}
-                  busy={busy}
-                  comms={scopedComms}
-                  onOpen={setDrawer}
-                  onRunAuto={() => run(
+              <PageHead title="Escalation Center" sub="Every escalation on communications and licenses, with who responded and when">
+                <button
+                  className="btn btn-outline"
+                  type="button"
+                  disabled={busy}
+                  onClick={() => run(
                     db.source === "dataverse" ? "Refreshed from Dataverse (auto flow runs every 10 minutes)" : "Automatic escalation ran",
                     runAutomaticEscalation,
                   )}
-                  onEscalate={(row) => {
-                    if (canManualEscalate(row)) setModal({ kind: "escalate", comm: row });
-                  }}
-                />
-              ) : (
-                <LicenseEscalationPanel
-                  q={q}
-                  busy={busy}
-                  docs={scopedDocs}
-                  onOpen={(doc) => setModal({ kind: "docDetail", doc })}
-                  onEscalate={(doc) => setModal({ kind: "escalateDoc", doc })}
-                />
-              )}
+                >
+                  {db.source === "dataverse" ? "Refresh from auto flow" : "Run automatic escalation"}
+                </button>
+                <button
+                  className="btn btn-outline"
+                  type="button"
+                  disabled={busy}
+                  onClick={() => run("Expiry monitor ran", async () => summarizeMonitor(await runLicenseMonitor()))}
+                >
+                  Run expiry monitor
+                </button>
+              </PageHead>
+              <SystemEscalationCenter
+                q={q}
+                setQ={setQ}
+                busy={busy}
+                comms={scopedComms}
+                docs={scopedDocs}
+                onOpenComm={setDrawer}
+                onOpenDoc={(doc) => setModal({ kind: "docDetail", doc })}
+                onEscalateComm={(row) => {
+                  if (canManualEscalate(row)) setModal({ kind: "escalate", comm: row });
+                }}
+                onEscalateDoc={(doc) => setModal({ kind: "escalateDoc", doc })}
+              />
+            </>
+          )}
+
+          {screen === "draftParties" && (
+            <>
+              <PageHead title="Draft Parties" sub={`${scopedParties.filter((p) => p.status === "Draft").length} new external parties waiting to be accepted`}>
+              </PageHead>
+              <div className="filters">
+                <FilterField label="Search" className="ffld-search">
+                  <input type="search" placeholder="Search party, domain, email" value={q} onChange={(e) => setQ(e.target.value)} />
+                </FilterField>
+                <span className="fnote">Accept sets the status to Active on the external party record</span>
+              </div>
+              <DataTable
+                cols={["Party", "Category", "Email", "Domain", "Business Unit", "Department", "Status", ""]}
+                rows={scopedParties
+                  .filter((p) => p.status === "Draft")
+                  .filter((p) => `${p.name} ${p.domain} ${p.email}`.toLowerCase().includes(q.toLowerCase()))
+                  .map((p) => ({
+                    key: p.id,
+                    cells: [
+                      p.name,
+                      catBadge(p.category),
+                      p.email,
+                      p.domain,
+                      p.bu || "—",
+                      p.department || "—",
+                      statusBadge(p.status),
+                      <button
+                        key="accept"
+                        className="btn btn-primary btn-mini"
+                        type="button"
+                        disabled={busy}
+                        onClick={() => run(`${p.name} is now Active`, () => acceptParty(p.id))}
+                      >
+                        Accept
+                      </button>,
+                    ],
+                  }))}
+              />
             </>
           )}
 
@@ -586,9 +604,7 @@ export default function App() {
                 rows={scopedDocs}
                 q={q}
                 setQ={setQ}
-                busy={busy}
                 onOpen={(doc) => setModal({ kind: "docDetail", doc })}
-                onRenew={(doc) => run(`${doc.name} renewed`, () => renewDoc(doc.id))}
               />
             </>
           )}
@@ -603,36 +619,62 @@ export default function App() {
               onMonth={setCalMonth}
               onView={setCalView}
               onOpen={(doc) => setModal({ kind: "docDetail", doc })}
-              onRenew={(doc) => run(`${doc.name} renewed`, () => renewDoc(doc.id))}
               onNew={() => setModal({ kind: "doc" })}
+            />
+          )}
+
+          {screen === "risk" && (
+            <RiskMatrix
+              docs={scopedDocs}
+              q={q}
+              setQ={setQ}
+              onOpen={(doc) => setModal({ kind: "docDetail", doc })}
             />
           )}
 
           {screen === "notifications" && (
             <>
-              <PageHead title="Notification Center" sub={`${db.notices.length} logged events · ${unreadNoticeCount} unread`}>
-                <button className="btn btn-outline" type="button" disabled={busy} onClick={() => run("Expiry monitor ran", async () => summarizeMonitor(await runLicenseMonitor()))}>Run expiry monitor</button>
-              </PageHead>
-              <NotificationCenter
-                q={q}
-                setQ={setQ}
-                busy={busy}
-                onOpenDoc={(doc) => setModal({ kind: "docDetail", doc })}
-              />
+              <div className="toggle" style={{ marginBottom: 14 }}>
+                <button className={noticeView === "log" ? "on" : ""} type="button" onClick={() => setNoticeView("log")}>Notices</button>
+                <button className={noticeView === "audit" ? "on" : ""} type="button" onClick={() => setNoticeView("audit")}>Renewal audit</button>
+              </div>
+              {noticeView === "log" ? (
+                <>
+                  <PageHead title="Notification Center" sub={`${db.notices.length} logged events · ${unreadNoticeCount} unread · response time is recorded against the responsible person`}>
+                    <button className="btn btn-outline" type="button" disabled={busy} onClick={() => run("Expiry monitor ran", async () => summarizeMonitor(await runLicenseMonitor()))}>Run expiry monitor</button>
+                  </PageHead>
+                  <NotificationCenter
+                    q={q}
+                    setQ={setQ}
+                    busy={busy}
+                    onOpenDoc={(doc) => setModal({ kind: "docDetail", doc })}
+                  />
+                </>
+              ) : (
+                <NotificationAuditScreen
+                  q={q}
+                  setQ={setQ}
+                  docs={scopedDocs}
+                  notices={db.notices}
+                  renewals={db.renewals}
+                  parties={db.parties}
+                  busy={busy}
+                  onOpen={(doc) => setModal({ kind: "docDetail", doc })}
+                  onRefresh={() => void run("Refreshed", () => refresh())}
+                  onDone={ping}
+                  onFail={ping}
+                />
+              )}
             </>
           )}
 
           {screen === "admin" && (
-            <>
-              <PageHead title="Admin Configuration" sub="SLA matrix is for category/priority matching. Is OverDue and Due Date on Communication are Dataverse formula columns." />
-              <DataTable
-                cols={["Name", "Category", "Priority", "Ack (hours)", "Resolve (days)", "Basis", "Active"]}
-                rows={db.sla.map((r) => ({
-                  key: r.id,
-                  cells: [r.name, catBadge(r.category), priBadge(r.priority), r.ackHours, r.resolveDays, r.basis, statusBadge(r.active ? "Active" : "Inactive")],
-                }))}
-              />
-            </>
+            <AdminConfiguration
+              busy={busy}
+              onRefresh={() => void run("Refreshed", () => refresh())}
+              onDone={ping}
+              onFail={ping}
+            />
           )}
 
           {screen === "archive" && (
@@ -655,22 +697,6 @@ export default function App() {
             />
           )}
 
-          {screen === "auditNotif" && (
-            <NotificationAuditScreen
-              q={q}
-              setQ={setQ}
-              docs={scopedDocs}
-              notices={db.notices}
-              renewals={db.renewals}
-              parties={db.parties}
-              busy={busy}
-              onOpen={(doc) => setModal({ kind: "docDetail", doc })}
-              onRefresh={() => void run("Refreshed", () => refresh())}
-              onDone={ping}
-              onFail={ping}
-            />
-          )}
-
           {screen === "reports" && (
             <>
               <PageHead title="Power BI Reports" sub="Operational counts from the same Dataverse tables. Embed a Power BI report here when the workspace is ready." />
@@ -679,7 +705,7 @@ export default function App() {
                 <Kpi acc="var(--info)" label="Licenses" value={kpi(scopedDocs.length)} detail="erc_licenseandcontract" onClick={() => go("licenses")} />
                 <Kpi acc="var(--warn)" label="Archive files" value={kpi(db.archives.length)} detail="erc_documentarchive" onClick={() => go("archive")} />
                 <Kpi acc="var(--ok)" label="Audit events" value={kpi(db.audits.length)} detail="erc_communicationaudit" onClick={() => go("auditComm")} />
-                <Kpi acc="var(--info)" label="Notices" value={kpi(db.notices.length)} detail="erc_notification" onClick={() => go("auditNotif")} />
+                <Kpi acc="var(--info)" label="Notices" value={kpi(db.notices.length)} detail="erc_notification" onClick={() => go("notifications")} />
                 <Kpi acc="var(--bad)" label="Overdue" value={kpi(breached.length)} detail="Is OverDue" onClick={() => go("escalation")} />
               </div>
               <div className="callout">These figures are live from Dataverse. A published Power BI report can replace this page later without adding a table.</div>
@@ -699,7 +725,6 @@ export default function App() {
             onEscalate={() => {
               if (canManualEscalate(liveDrawer)) setModal({ kind: "escalate", comm: liveDrawer });
             }}
-            onEvidence={() => setModal({ kind: "evidence", comm: liveDrawer })}
             onSaved={ping}
           />
         </OverlayError>
@@ -761,7 +786,7 @@ function CommTable({
       </div>
       <DataTable
         cols={legal
-          ? ["CommID", "Case Reference", "External Party", "Subject", "Owner", "Priority", "Received", "Due", "Status", "Overdue", "Escalated"]
+          ? ["CommID", "External Party", "Subject", "Owner", "Priority", "Received", "Due", "Status", "Overdue", "Escalated"]
           : ["CommID", "External Party", "Category", "Subject", "Owner", "Priority", "Due", "Status", "Overdue", "Escalated"]}
         rows={filtered.map((r) => ({
           key: r.recordId || r.id,
@@ -770,7 +795,6 @@ function CommTable({
           cells: legal
             ? [
                 <span className="link" key="id">{r.id}</span>,
-                r.caseRef || "—",
                 r.party || (r.partyId ? "Linked party" : "—"),
                 r.subj,
                 r.owner || "—",
@@ -816,7 +840,7 @@ function IntakeScreen({
   );
   return (
     <>
-      <PageHead title="Central Mailbox" sub={`${mails.length} emails to ${MAILBOX_MAHA}, ${MAILBOX_TEST}, ${MAILBOX_PROD}`}>
+      <PageHead title="Central Mailbox" sub={`${mails.length} emails to ${MAILBOX_PROD}`}>
         <button className="btn btn-primary" type="button" disabled={busy} onClick={onRefresh}>Refresh</button>
       </PageHead>
       <div className="filters">
@@ -836,7 +860,7 @@ function IntakeScreen({
           cells: [
             <span className="mono" key="r">{x.recv}</span>,
             x.from,
-            x.to || MAILBOX_MAHA,
+            x.to || MAILBOX_PROD,
             x.subj,
             x.threadAction ? statusBadge(x.threadAction) : "—",
             x.match || <span className="badge b-bad" key="u">Unmatched</span>,
@@ -852,17 +876,16 @@ function IntakeScreen({
 }
 
 function RenewalCalendar({
-  month, view, q, setQ, docs, onMonth, onView, onOpen, onRenew, onNew,
+  month, view, q, setQ, docs, onMonth, onView, onOpen, onNew,
 }: {
   month: string;
-  view: "cal" | "list" | "risk";
+  view: "cal" | "list";
   q: string;
   setQ: (v: string) => void;
   docs: License[];
   onMonth: (v: string) => void;
-  onView: (v: "cal" | "list" | "risk") => void;
+  onView: (v: "cal" | "list") => void;
   onOpen: (row: License) => void;
-  onRenew: (row: License) => void;
   onNew: () => void;
 }) {
   const db = useStore();
@@ -923,7 +946,6 @@ function RenewalCalendar({
         <div className="toggle">
           <button className={view === "cal" ? "on" : ""} type="button" onClick={() => onView("cal")}>Calendar</button>
           <button className={view === "list" ? "on" : ""} type="button" onClick={() => onView("list")}>List</button>
-          <button className={view === "risk" ? "on" : ""} type="button" onClick={() => onView("risk")}>Risk Matrix</button>
         </div>
         <span style={{ fontSize: 12, color: "var(--muted)" }}>
           {statusBadge("Expired")} {priBadge("High")} {statusBadge("Active")}
@@ -960,40 +982,8 @@ function RenewalCalendar({
           rows={[...docs].sort((a, b) => a.expiry.localeCompare(b.expiry))}
           q={q}
           setQ={setQ}
-          busy={false}
           onOpen={onOpen}
-          onRenew={onRenew}
         />
-      )}
-      {view === "risk" && (
-        <div className="tablewrap">
-          <table>
-            <thead><tr><th /><th>Under 30 days</th><th>30 – 90 days</th><th>Over 90 days</th></tr></thead>
-            <tbody>
-              {(["High", "Medium", "Low"] as const).map((risk) => (
-                <tr key={risk}>
-                  <td><b>{risk} risk</b></td>
-                  {[0, 1, 2].map((band) => {
-                    const list = docs.filter((x) => {
-                      const t = daysBetween(TODAY, x.expiry);
-                      const b = t < 30 ? 0 : t <= 90 ? 1 : 2;
-                      return (x.risk === risk || (risk === "High" && x.risk === "Critical")) && b === band;
-                    });
-                    return (
-                      <td key={band}>
-                        {list.length ? list.map((x) => (
-                          <div key={x.id} style={{ marginBottom: 4 }}>
-                            <a className="link" onClick={() => onOpen(x)}>{x.name}</a>
-                          </div>
-                        )) : "—"}
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
       )}
       {db.renewals.length > 0 && <RenewalTaskTable rows={db.renewals} />}
     </>
@@ -1028,7 +1018,7 @@ function Modals({
   if (modal.kind === "party") {
     return (
       <Overlay kind="modal" title="New External Party" sub="Used to match inbound sender domains" onClose={onClose} footer={null}>
-        <PartyForm onCancel={onClose} onSave={() => onDone("Party created")} />
+        <PartyForm onCancel={onClose} onSave={() => onDone("Party saved as Draft. Accept it on Draft Parties.")} />
       </Overlay>
     );
   }
@@ -1044,6 +1034,7 @@ function Modals({
   }
   if (modal.kind === "process") {
     const m = db.intake.find((x) => x.id === modal.mail.id) || modal.mail;
+    const routed = matchRoutingRule({ from: m.from, subject: m.subj, party: m.match });
     return (
       <Overlay kind="modal" title="Process inbound email" sub={m.from} onClose={onClose} footer={null}>
         <form onSubmit={(e) => {
@@ -1075,11 +1066,12 @@ function Modals({
             <dt>Matched party</dt><dd>{m.match || <span className="badge b-bad">Unmatched — create a party first</span>}</dd>
           </dl>
           <h2 className="sec">Routing proposal</h2>
+          {routed ? <div className="note">Matched routing rule <b>{routed.name}</b>. Category, priority and owner are filled from that rule.</div> : null}
           <div className="form">
-            <div><label>External party *</label><select name="party" defaultValue={m.match} required>{db.parties.map((p) => <option key={p.id}>{p.name}</option>)}</select></div>
-            <div><label>Category *</label><select name="cat" defaultValue={m.cat}>{CATS.map((c) => <option key={c}>{c}</option>)}</select></div>
-            <div><label>Priority *</label><select name="pri" defaultValue={m.pri}>{PRIS.map((c) => <option key={c}>{c}</option>)}</select></div>
-            <div><label>Owner *</label><select name="owner" defaultValue={m.owner}>{OWNERS.map((c) => <option key={c}>{c}</option>)}</select></div>
+            <div><label>External party *</label><select name="party" defaultValue={m.match} required>{db.parties.filter((p) => p.status === "Active").map((p) => <option key={p.id}>{p.name}</option>)}</select></div>
+            <div><label>Category *</label><select name="cat" defaultValue={routed?.category || m.cat}>{CATS.map((c) => <option key={c}>{c}</option>)}</select></div>
+            <div><label>Priority *</label><select name="pri" defaultValue={routed && routed.priority !== "None" ? routed.priority : m.pri}>{PRIS.map((c) => <option key={c}>{c}</option>)}</select></div>
+            <div><label>Owner *</label><select name="owner" defaultValue={OWNERS.includes(routed?.owner as typeof OWNERS[number]) ? routed?.owner : m.owner}>{OWNERS.map((c) => <option key={c}>{c}</option>)}</select></div>
             <div><label>Supervisor</label><select name="sup">{SUPS.map((c) => <option key={c}>{c}</option>)}</select></div>
             <div><label>Business unit</label><select name="bu">{BUS.map((c) => <option key={c}>{c}</option>)}</select></div>
           </div>
@@ -1135,16 +1127,18 @@ function Modals({
   }
   if (modal.kind === "escalate") {
     const r = db.comms.find((c) => c.id === modal.comm.id) || modal.comm;
+    const nextLevel = (r.escalationStep || 0) + 1;
     if (!canManualEscalate(r)) {
+      const closed = r.status === "Closed";
       return (
-        <Overlay kind="modal" title={`Already escalated — ${r.id}`} sub="Manual escalation can run only once" onClose={onClose} footer={null}>
+        <Overlay kind="modal" title={closed ? `Closed — ${r.id}` : `Chain complete — ${r.id}`} sub={closed ? "A closed communication is not escalated" : "Every level on this chain has been notified"} onClose={onClose} footer={null}>
           <dl className="kv">
-            <dt>Is Escalated</dt><dd>Yes</dd>
-            <dt>Is Manually Escalated</dt><dd>{r.isManuallyEscalated ? "Yes" : "No"}</dd>
+            <dt>Level</dt><dd>{r.escalationStep ? `Level ${r.escalationStep}` : "—"}</dd>
+            <dt>Current recipient</dt><dd>{r.currentRecipient || "—"}</dd>
+            <dt>Next level</dt><dd>{r.nextEscalationOn ? formatDateTime(r.nextEscalationOn) : "—"}</dd>
             <dt>Escalation reason</dt><dd>{r.escalationReason || "—"}</dd>
             <dt>Escalated by</dt><dd>{r.escalatedBy || "—"}</dd>
           </dl>
-          <div className="note">This record is locked. The Communications Manual Escalation flow will not run a second time.</div>
           <div className="df" style={{ margin: "16px -20px -20px" }}>
             <button className="btn btn-ghost" type="button" onClick={onClose}>Close</button>
           </div>
@@ -1152,26 +1146,26 @@ function Modals({
       );
     }
     return (
-      <Overlay kind="modal" title={`Manual escalation — ${r.id}`} sub="Runs the Communications Manual Escalation flow once" onClose={onClose} footer={null}>
+      <Overlay kind="modal" title={`Notify level ${nextLevel} — ${r.id}`} sub="Emails and Teams everyone on this level" onClose={onClose} footer={null}>
         <form onSubmit={(e) => {
           e.preventDefault();
-          if (!canManualEscalate(r)) return onFail("This communication is already escalated");
+          if (!canManualEscalate(r)) return onFail(r.status === "Closed" ? "This communication is closed" : "Every level on the escalation chain has already been notified");
           const f = new FormData(e.currentTarget);
           const reason = String(f.get("reason") || "").trim();
           if (!reason) return onFail("Escalation reason is required");
-          void go(`${r.id} escalated`, () => escalateManually(r.id, reason, ME));
+          void go(`${r.id} escalated to level ${nextLevel}`, () => escalateManually(r.id, reason, ME));
         }}>
           <div className="form">
             <div className="wide">
               <label>Escalation reason *</label>
-              <textarea name="reason" rows={3} required minLength={3} placeholder="Why is this being escalated?" />
+              <textarea name="reason" rows={3} required minLength={3} defaultValue={r.escalationReason || ""} placeholder="Why is this being escalated?" />
             </div>
           </div>
           <div className="note">
-            This writes <b>Is Escalated = Yes</b> so the manual flow runs once and cannot be sent again. Escalation reason is required.
+            This notifies everyone on <b>level {nextLevel}</b>. The next level waits for the hours on that chain row, or 24 hours when the wait is blank. Sending again moves one level forward.
           </div>
           <div className="df" style={{ margin: "16px -20px -20px" }}>
-            <button className="btn btn-primary" type="submit" disabled={busy}>Run manual escalation</button>
+            <button className="btn btn-primary" type="submit" disabled={busy}>Notify level {nextLevel}</button>
             <button className="btn btn-ghost" type="button" onClick={onClose}>Cancel</button>
           </div>
         </form>
@@ -1235,19 +1229,6 @@ function Modals({
       </Overlay>
     );
   }
-  if (modal.kind === "evidence") {
-    const r = modal.comm;
-    return (
-      <ArchiveUploadForm
-        busy={busy}
-        defaultCommId={r.recordId || r.id}
-        defaultType="Communication evidence"
-        onClose={onClose}
-        onSaved={onDone}
-        onFail={onFail}
-      />
-    );
-  }
   const x = db.docs.find((d) => d.id === modal.doc.id || d.recordId === modal.doc.recordId) || modal.doc;
   return (
     <LicenseRecordForm
@@ -1266,11 +1247,13 @@ function PartyForm({ onCancel, onSave }: { onCancel: () => void; onSave: () => v
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const f = new FormData(e.currentTarget);
-    const domain = String(f.get("domain") || "").trim();
-    if (!domain) {
-      setError("Domain is required.");
+    const domainRaw = String(f.get("domain") || "");
+    const domainError = emailDomainError(domainRaw);
+    if (domainError) {
+      setError(domainError);
       return;
     }
+    const domain = normalizePartyDomain(domainRaw);
     const buId = String(f.get("bu") || "");
     const unit = db.businessUnits.find((u) => u.id === buId);
     setBusy(true);
@@ -1304,7 +1287,7 @@ function PartyForm({ onCancel, onSave }: { onCancel: () => void; onSave: () => v
         <div><label>Official email *</label><input name="email" type="email" required /></div>
         <div>
           <label>Domain *</label>
-          <input name="domain" required minLength={3} placeholder="gmail.com" />
+          <input name="domain" required placeholder="gmail.com" title="Email domain only, such as gmail.com or mohp.gov.eg" autoComplete="off" />
         </div>
         <div><label>Business unit *</label>
           <select name="bu" required>
@@ -1312,7 +1295,7 @@ function PartyForm({ onCancel, onSave }: { onCancel: () => void; onSave: () => v
           </select>
         </div>
       </div>
-      {error ? <div className="note">{error}</div> : <div className="note">The party is saved as Draft so IT can be notified. Domain is required so inbound senders can be matched.</div>}
+      {error ? <div className="note">{error}</div> : <div className="note">The party is saved as Draft. It appears on Draft Parties until it is accepted, and then the status becomes Active. Domain is the part after @ in the official email, such as gmail.com or mohp.gov.eg.</div>}
       <div className="df" style={{ margin: "16px -20px -20px" }}>
         <button className="btn btn-primary" type="submit" disabled={busy}>Create Party</button>
         <button className="btn btn-ghost" type="button" onClick={onCancel}>Cancel</button>
@@ -1324,16 +1307,26 @@ function PartyForm({ onCancel, onSave }: { onCancel: () => void; onSave: () => v
 function CommForm({ onCancel, onSave }: { onCancel: () => void; onSave: () => void }) {
   const db = useStore();
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const activeParties = db.parties.filter((p) => p.status === "Active");
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const f = new FormData(e.currentTarget);
+    const partyName = String(f.get("party") || "");
+    const party = activeParties.find((p) => p.name === partyName);
+    if (!party) {
+      setError("Communication was not created. An Active external party is required.");
+      return;
+    }
     const cat = String(f.get("cat")) as Category;
     const pri = String(f.get("pri")) as Priority;
     const rec = String(f.get("rec"));
     setBusy(true);
+    setError("");
     try {
       await addComm({
-        party: String(f.get("party")),
+        party: party.name,
+        partyId: party.id,
         cat,
         subj: String(f.get("subj")),
         owner: String(f.get("owner")),
@@ -1343,9 +1336,10 @@ function CommForm({ onCancel, onSave }: { onCancel: () => void; onSave: () => vo
         due: "",
         status: "In Progress",
         bu: String(f.get("bu")),
-        caseRef: String(f.get("caseRef") || ""),
       });
       onSave();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not create the communication.");
     } finally {
       setBusy(false);
     }
@@ -1354,18 +1348,17 @@ function CommForm({ onCancel, onSave }: { onCancel: () => void; onSave: () => vo
     <form onSubmit={submit}>
       <div className="form">
         <div className="wide"><label>Subject *</label><input name="subj" required /></div>
-        <div><label>External party *</label><select name="party">{db.parties.map((p) => <option key={p.id}>{p.name}</option>)}</select></div>
+        <div><label>External party *</label><select name="party" required>{activeParties.map((p) => <option key={p.id}>{p.name}</option>)}</select></div>
         <div><label>Category *</label><select name="cat">{CATS.map((c) => <option key={c}>{c}</option>)}</select></div>
         <div><label>Priority *</label><select name="pri" defaultValue="High">{PRIS.map((c) => <option key={c}>{c}</option>)}</select></div>
         <div><label>Owner *</label><input name="owner" defaultValue={ME} required /></div>
         <div><label>Supervisor</label><select name="sup">{SUPS.map((c) => <option key={c}>{c}</option>)}</select></div>
         <div><label>Received date *</label><input name="rec" type="date" defaultValue={TODAY} required /></div>
         <div><label>Business unit</label><select name="bu">{BUS.map((b) => <option key={b}>{b}</option>)}</select></div>
-        <div className="wide"><label>Case reference (legal)</label><input name="caseRef" /></div>
       </div>
-      <div className="note">Due Date and Is OverDue are formula columns (Created On + 2 hours). The automatic flow reads that column; this app does not calculate or write it.</div>
+      {error ? <div className="note">{error}</div> : <div className="note">A communication is created only when the external party status is Active. Draft and Inactive parties are not listed.</div>}
       <div className="df" style={{ margin: "16px -20px -20px" }}>
-        <button className="btn btn-primary" type="submit" disabled={busy}>Create Record</button>
+        <button className="btn btn-primary" type="submit" disabled={busy || !activeParties.length}>Create Record</button>
         <button className="btn btn-ghost" type="button" onClick={onCancel}>Cancel</button>
       </div>
     </form>

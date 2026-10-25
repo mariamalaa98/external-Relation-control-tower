@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+﻿import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import {
   CATS,
   type Communication,
@@ -8,28 +8,33 @@ import {
 import {
   canManualEscalate,
   commLocked,
-  communicationDeepLink,
-  copyText,
   formatDateTime,
-  downloadArchiveFile,
   loadCommThread,
   loadEmailAttachmentFile,
   overdueLabel,
-  sameId,
   saveComm,
   threadEmails,
   useStore,
-  yesNo,
 } from "../data/store";
 import {
   bytesToObjectUrl,
   decodeText,
   downloadBytes,
   formatBytes,
-  mimeFromFileName,
   previewKind,
 } from "../data/emailAttachments";
-import { Overlay, FilterField, catBadge, flagBadge, priBadge, statusBadge } from "./widgets";
+import { Overlay, catBadge, flagBadge, priBadge, statusBadge } from "./widgets";
+
+function emailDescription(emails: ThreadEmail[]) {
+  const withText = emails.filter((mail) => (mail.body || mail.quoted || "").trim());
+  const inbound = withText.find((mail) => mail.direction === "Inbound");
+  const mail = inbound || withText[0];
+  return (mail?.body || mail?.quoted || "").trim();
+}
+
+function clipDescription(text: string) {
+  return text.length <= 2000 ? text : text.slice(0, 2000);
+}
 
 export function CommRecordForm({
   row,
@@ -38,7 +43,6 @@ export function CommRecordForm({
   onCloseRec,
   onReopen,
   onEscalate,
-  onEvidence,
   onSaved,
 }: {
   row: Communication;
@@ -47,22 +51,11 @@ export function CommRecordForm({
   onCloseRec: () => void;
   onReopen: () => void;
   onEscalate: () => void;
-  onEvidence?: () => void;
   onSaved: (msg: string) => void;
 }) {
   const db = useStore();
   const emails = threadEmails(row);
   const locked = commLocked(row);
-  const archives = db.archives.filter((a) => sameId(a.communicationId, row.recordId) || a.communicationId === row.id);
-
-  async function downloadArchive(id: string, name: string) {
-    try {
-      const file = await downloadArchiveFile(id);
-      downloadBytes(file.bytes, file.name || name, mimeFromFileName(file.name || name));
-    } catch (err) {
-      onSaved(err instanceof Error ? err.message : "Could not download the file.");
-    }
-  }
   const [saving, setBusy] = useState(false);
   const [tab, setTab] = useState<"general" | "email">("general");
   const [threadBusy, setThreadBusy] = useState(false);
@@ -71,31 +64,35 @@ export function CommRecordForm({
   const partyFromTable = hasParty;
   const catFromTable = hasParty || row.categoryAssigned;
   const subjectFromTable = !!(row.emailSubject || row.subj);
-  const descFromTable = !!row.description?.trim();
-  const slaFromTable = !!row.slaId;
-  const recordLink = communicationDeepLink(row.recordId);
+  const fromEmail = clipDescription(emailDescription(emails));
+  const descriptionText = fromEmail || row.description || "";
+  const savedBody = useRef("");
 
   useEffect(() => {
     setThreadBusy(true);
     void loadCommThread(row).finally(() => setThreadBusy(false));
   }, [row.id, row.recordId]);
 
+  useEffect(() => {
+    if (!fromEmail || locked || fromEmail === (row.description || "").trim() || savedBody.current === fromEmail) return;
+    savedBody.current = fromEmail;
+    void saveComm(row.id, { description: fromEmail }).catch(() => { savedBody.current = ""; });
+  }, [fromEmail, locked, row.description, row.id]);
+
   async function save(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const f = new FormData(e.currentTarget);
     const partyId = partyFromTable ? (row.partyId || "") : String(f.get("partyId") || "");
     const party = db.parties.find((p) => p.id === partyId);
-    const slaId = slaFromTable ? (row.slaId || "") : String(f.get("sla") || row.slaId || "");
     setBusy(true);
     try {
       await saveComm(row.id, {
-        description: descFromTable ? (row.description || "") : String(f.get("description") || ""),
+        description: descriptionText,
         partyId,
         party: partyFromTable ? (row.party || "") : (party?.name || ""),
-        slaId,
-        slaName: slaFromTable ? row.slaName : (db.sla.find((s) => s.id === slaId)?.name || row.slaName),
+        slaId: row.slaId || "",
+        slaName: row.slaName,
         cat: partyId || catFromTable ? row.cat : (String(f.get("cat") || row.cat) as Communication["cat"]),
-        caseRef: String(f.get("caseRef") || ""),
       });
       onSaved("Communication saved");
     } finally {
@@ -133,15 +130,6 @@ export function CommRecordForm({
     }
   }
 
-  async function copyRecordLink() {
-    if (!recordLink) {
-      onSaved("No record link for this environment");
-      return;
-    }
-    const ok = await copyText(recordLink);
-    onSaved(ok ? "Link copied" : recordLink);
-  }
-
   return (
     <Overlay
       kind="drawer"
@@ -157,9 +145,9 @@ export function CommRecordForm({
       ) : (
         <>
           <button className="btn btn-primary" type="submit" form="comm-form" disabled={saving}>Save</button>
-          <button className="btn btn-outline" type="button" disabled={busy || !canManualEscalate(row)} onClick={onEscalate}>
-            {canManualEscalate(row) ? "Escalate" : "Already escalated"}
-          </button>
+          {canManualEscalate(row) ? (
+            <button className="btn btn-outline" type="button" disabled={busy} onClick={onEscalate}>Escalate to level {(row.escalationStep || 0) + 1}</button>
+          ) : null}
           <button className="btn btn-outline" type="button" disabled={busy} onClick={onCloseRec}>Close</button>
           <button className="btn btn-ghost" type="button" onClick={onClose}>Close panel</button>
         </>
@@ -171,6 +159,7 @@ export function CommRecordForm({
         {statusBadge(row.status)}
         {flagBadge(row.isOverdue, "Overdue", "On Track")}
         {row.isManuallyEscalated ? flagBadge(true, "Manually Escalated", "Not Escalated") : null}
+        {row.escalationStep ? <span className="badge b-gold">Level {row.escalationStep}</span> : null}
       </div>
       <div className="tabs">
         <button className={tab === "general" ? "on" : ""} type="button" onClick={() => setTab("general")}>General</button>
@@ -186,12 +175,6 @@ export function CommRecordForm({
             <div className="mdf-sec">Identity</div>
             <Field label="Owner">
               <div className="lookup">{row.owner || "—"}</div>
-            </Field>
-            <Field label="Record link" wide>
-              <div className="deeplink-row">
-                <input readOnly value={recordLink} />
-                <button className="btn btn-outline" type="button" onClick={() => void copyRecordLink()}>Copy</button>
-              </div>
             </Field>
             <Field label="External Party">
               {partyFromTable ? (
@@ -222,11 +205,7 @@ export function CommRecordForm({
               )}
             </Field>
             <Field label="Description" wide>
-              {descFromTable ? (
-                <textarea readOnly rows={3} value={row.description || ""} />
-              ) : (
-                <textarea name="description" rows={3} defaultValue="" disabled={locked} />
-              )}
+              <textarea readOnly rows={8} value={descriptionText || (threadBusy ? "Loading emails" : "")} placeholder="No email body" />
             </Field>
 
             <div className="mdf-sec">Classification</div>
@@ -251,21 +230,6 @@ export function CommRecordForm({
             <Field label="Business Unit">
               <div className="readonly-val">{row.bu || "—"}</div>
             </Field>
-            <Field label="SLA">
-              {slaFromTable ? (
-                <div className="readonly-val">{row.slaName || "—"}</div>
-              ) : (
-                <select name="sla" defaultValue="" disabled={locked}>
-                  <option value="">—</option>
-                  {db.sla.filter((s) => s.active).map((s) => (
-                    <option key={s.id} value={s.id}>{s.name}</option>
-                  ))}
-                </select>
-              )}
-            </Field>
-            <Field label="Case reference">
-              <input name="caseRef" defaultValue={row.caseRef || ""} disabled={locked} maxLength={100} />
-            </Field>
             <Field label="Due Date">
               <input readOnly value={formatDateTime(row.due)} />
             </Field>
@@ -273,9 +237,21 @@ export function CommRecordForm({
               {flagBadge(row.isOverdue, overdueLabel(true), overdueLabel(false))}
             </Field>
 
-            {row.isManuallyEscalated ? (
+            {row.isEscalated || row.escalationStep ? (
               <>
                 <div className="mdf-sec">Escalation</div>
+                <Field label="Level">
+                  <div className="readonly-val">{row.escalationStep ? `Level ${row.escalationStep}` : "—"}</div>
+                </Field>
+                <Field label="Current recipient">
+                  <div className="lookup">{row.currentRecipient || "—"}</div>
+                </Field>
+                <Field label="Last escalated">
+                  <input readOnly value={row.lastEscalatedOn ? formatDateTime(row.lastEscalatedOn) : ""} placeholder="—" />
+                </Field>
+                <Field label="Next level">
+                  <input readOnly value={row.nextEscalationOn ? formatDateTime(row.nextEscalationOn) : ""} placeholder={row.escalationStep ? "Chain complete" : "—"} />
+                </Field>
                 <Field label="Escalated By">
                   <div className="lookup">{row.escalatedBy || "—"}</div>
                 </Field>
@@ -293,38 +269,9 @@ export function CommRecordForm({
               <input readOnly value={row.closed ? formatDateTime(row.closed) : ""} placeholder="—" />
             </Field>
             <Field label="Closure Comment" wide>
-              <textarea readOnly rows={2} value={row.closureComment || ""} placeholder="Entered when you escalate or close" />
+              <textarea readOnly rows={2} value={row.closureComment || ""} />
             </Field>
           </form>
-          <h2 className="sec">Document evidence ({archives.length})</h2>
-          {archives.length ? (
-            <ul className="tl">
-              {archives.map((file) => (
-                <li key={file.recordId || file.id}>
-                  <b>{file.name}</b>
-                  <span>
-                    {file.type}
-                    {file.uploadedOn ? ` · ${formatDateTime(file.uploadedOn)}` : ""}
-                    {file.fileName ? (
-                      <>
-                        {" · "}
-                        <button className="btn btn-ghost" type="button" onClick={() => void downloadArchive(file.id, file.fileName || file.name)}>
-                          Download
-                        </button>
-                      </>
-                    ) : null}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <div className="note">No files on Document Archive for this record yet.</div>
-          )}
-          {onEvidence && !locked ? (
-            <div className="df" style={{ margin: "8px 0 16px" }}>
-              <button className="btn btn-outline" type="button" disabled={busy || saving} onClick={onEvidence}>Upload evidence</button>
-            </div>
-          ) : null}
           <h2 className="sec">Timeline</h2>
           <ul className="tl">
             {row.log?.map((e, i) => (
@@ -366,7 +313,7 @@ export function CloseCommForm({
       onSubmit(cmt);
     }}>
       <div className="form">
-        <div><label>Outcome</label><select><option>Responded and accepted</option><option>Responded — no reply required</option><option>Withdrawn by external party</option></select></div>
+        <div><label>Outcome</label><select><option>Responded</option><option>No reply required</option></select></div>
         <div className="wide"><label>Closure comment *</label><textarea name="cmt" rows={3} required placeholder="How was the request satisfied?" /></div>
       </div>
       <h2 className="sec">Email evidence ({emails.length})</h2>
@@ -390,7 +337,7 @@ export function EmailThreadPanel({
   className?: string;
 }) {
   if (loading && !emails.length) {
-    return <div className="note">Loading emails from the Emails table…</div>;
+    return <div className="note">Loading emails</div>;
   }
   if (!emails.length) {
     return (
@@ -538,94 +485,5 @@ function Field({ label, required, wide, children }: { label: string; required?: 
       <label>{label}{required ? <span className="req"> *</span> : null}</label>
       {children}
     </div>
-  );
-}
-
-export function EscalationCenter({
-  q,
-  setQ,
-  busy,
-  comms,
-  onOpen,
-  onRunAuto,
-  onEscalate,
-}: {
-  q: string;
-  setQ: (v: string) => void;
-  busy: boolean;
-  comms: Communication[];
-  onOpen: (row: Communication) => void;
-  onRunAuto: () => void;
-  onEscalate: (row: Communication) => void;
-}) {
-  const db = useStore();
-  const overdueOpen = comms.filter((c) => c.status !== "Closed" && c.isOverdue && !c.isEscalated);
-  const auto = comms.filter((c) => c.isAutomaticallyEscalated);
-  const manual = comms.filter((c) => c.isManuallyEscalated);
-  const rows = comms.filter((c) => {
-    const blob = `${c.id} ${c.party} ${c.subj} ${c.owner}`.toLowerCase();
-    return blob.includes(q.toLowerCase()) && (c.isOverdue || c.isEscalated);
-  });
-  return (
-    <>
-      <div className="callout">
-        <b>Automatic Communication Escalations</b> runs every 10 minutes for records where the <b>Is OverDue</b> formula column is true, Is Escalated is not true, and Lifecycle is not Closed.
-        <b>Communications Manual Escalation</b> runs when you set Is Manually Escalated. Both write Is Escalated so a record is never emailed twice.
-      </div>
-      <div className="kpis">
-        <div className="kpi" style={{ ["--acc" as string]: "var(--bad)" }}>
-          <div className="l">Pending auto</div>
-          <div className="v">{overdueOpen.length}</div>
-          <div className="d">Overdue, not escalated, not closed</div>
-        </div>
-        <div className="kpi" style={{ ["--acc" as string]: "var(--warn)" }}>
-          <div className="l">Automatic</div>
-          <div className="v">{auto.length}</div>
-          <div className="d">Is Automatically Escalated = Yes</div>
-        </div>
-        <div className="kpi" style={{ ["--acc" as string]: "var(--info)" }}>
-          <div className="l">Manual</div>
-          <div className="v">{manual.length}</div>
-          <div className="d">Is Manually Escalated = Yes</div>
-        </div>
-      </div>
-      <div className="filters">
-        <FilterField label="Search" className="ffld-search">
-          <input type="search" placeholder="Search escalated or overdue" value={q} onChange={(e) => setQ(e.target.value)} />
-        </FilterField>
-        <button className="btn btn-primary" type="button" disabled={busy} onClick={onRunAuto}>
-          {db.source === "dataverse" ? "Refresh from auto flow" : "Run automatic escalation"}
-        </button>
-        <span className="fnote">{rows.length} shown</span>
-      </div>
-      <div className="tablewrap">
-        <table>
-          <thead>
-            <tr>
-              <th>CommID</th><th>Subject</th><th>Owner</th><th>Due</th><th>Overdue</th><th>Escalated</th><th>Auto</th><th>Manual</th><th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => (
-              <tr key={r.recordId || r.id} onClick={() => onOpen(r)}>
-                <td><span className="link">{r.id}</span></td>
-                <td>{r.subj}</td>
-                <td>{r.owner || "—"}</td>
-                <td className="mono">{formatDateTime(r.due)}</td>
-                <td>{flagBadge(r.isOverdue, "Overdue", "On Track")}</td>
-                <td>{flagBadge(r.isEscalated, "Escalated", "Not Escalated")}</td>
-                <td>{yesNo(r.isAutomaticallyEscalated)}</td>
-                <td>{yesNo(r.isManuallyEscalated)}</td>
-                <td>
-                  {canManualEscalate(r) ? (
-                    <button className="btn btn-outline btn-mini" type="button" onClick={(e) => { e.stopPropagation(); onEscalate(r); }}>Escalate</button>
-                  ) : "Already escalated"}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </>
   );
 }

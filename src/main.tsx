@@ -1,3 +1,4 @@
+import { getContext } from "@microsoft/power-apps/app";
 import { renderApp } from "./boot";
 import { hydrate, setHostQueryParams, syncHostQueryFromWindow } from "./data/store";
 
@@ -13,9 +14,7 @@ function withTimeout<T>(work: Promise<T>, ms: number) {
 
 async function connectDataverse() {
   try {
-    const mod = await import("@microsoft/power-apps/app");
-    if (typeof mod.getContext !== "function") return false;
-    const ctx = await withTimeout(mod.getContext(), 8000);
+    const ctx = await withTimeout(getContext(), 8000);
     const params = (ctx as { app?: { queryParams?: Record<string, string> } })?.app?.queryParams;
     setHostQueryParams(params);
     return true;

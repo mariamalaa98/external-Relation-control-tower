@@ -6,6 +6,7 @@ import {
   formatAuditDate,
   formatAuditStamp,
   inDateRange,
+  noticeDuty,
   renewalAuditRow,
   renewalEscalations,
   renewalSummary,
@@ -61,17 +62,24 @@ function downloadCsv(name: string, sections: { name: string; cols: string[]; row
   URL.revokeObjectURL(url);
 }
 
+function personCell(name: string, accountable: boolean) {
+  if (!name) return accountable ? <span className="accountable">Unassigned</span> : "—";
+  return accountable ? <span className="accountable">{name}</span> : name;
+}
+
 function EscalationTable({ rows }: { rows: AuditEscalation[] }) {
   return (
     <DataTable
-      cols={["Record", "Escalated To", "Escalation Received", "Response", "Response Lag", "Action Taken", "Status"]}
+      cols={["Record", "Escalated by", "Escalated on", "Escalated to", "Responded by", "Responded on", "Response lag", "Action taken", "Status"]}
       rows={rows.map((row) => ({
         key: row.key,
         cells: [
           <span key="id">{row.title}{row.subtitle ? <div style={{ color: "var(--muted)", fontSize: 11 }}>{row.subtitle}</div> : null}</span>,
-          row.to,
+          personCell(row.by, !row.responded),
           <span className="mono" key="recv">{formatAuditStamp(row.receivedAt) || "—"}</span>,
-          row.responseAt ? <span className="mono" key="resp">{formatAuditStamp(row.responseAt)}</span> : responseBadge(false),
+          row.to,
+          row.responded ? (row.respondedBy || "—") : "—",
+          row.responseAt ? <span className="mono" key="resp">{formatAuditStamp(row.responseAt)}</span> : "—",
           <span className="mono" key="lag">{row.lag}</span>,
           row.action || <span className="badge b-warn" key="act">No action recorded</span>,
           responseBadge(row.responded),
@@ -112,7 +120,7 @@ export function CommunicationAuditScreen({
   );
   const kpis = useMemo(() => commCompliance(rows), [rows]);
   const filtered = useMemo(() => rows.filter((row) => {
-    const hit = matchesSearch(q, row.commId, row.party, row.keyword, row.responseAction, row.category, row.source.subj);
+    const hit = matchesSearch(q, row.commId, row.party, row.keyword, row.responseAction, row.category, row.source.subj, row.owner, row.respondedBy);
     const stateOk = response === "All" || (response === "Within 24h" ? row.within24 : !row.within24);
     return hit
       && stateOk
@@ -133,22 +141,23 @@ export function CommunicationAuditScreen({
     downloadCsv(`communication-audit-${today}.csv`, [
       {
         name: "Communication register",
-        cols: ["CommID", "External Party", "Category", "Criticality", "Subject Keyword", "Comm Date & Time", "Response Date & Time", "Response Action", "Status", "Response SLA"],
+        cols: ["CommID", "External Party", "Category", "Criticality", "Subject Keyword", "Comm Date & Time", "Owner", "Responded by", "Response Date & Time", "Response Action", "Status", "Response SLA"],
         rows: filtered.map((row) => [
           row.commId, row.party, row.category, row.criticality, row.keyword,
-          formatAuditStamp(row.receivedAt), formatAuditStamp(row.responseAt) || "No Response",
+          formatAuditStamp(row.receivedAt), row.owner, row.respondedBy || "No response",
+          formatAuditStamp(row.responseAt) || "No Response",
           row.responseAction, row.status, row.within24 ? "Within 24h" : "Delayed",
         ]),
       },
       {
         name: "Escalation 1 — Supervisor",
-        cols: ["CommID", "Party", "Escalated To", "Escalation Received", "Response", "Response Lag", "Action Taken", "Status"],
-        rows: l1.map((row) => [row.title, row.subtitle, row.to, formatAuditStamp(row.receivedAt), formatAuditStamp(row.responseAt) || "No Response", row.lag, row.action, row.responded ? "Responded" : "No Response"]),
+        cols: ["CommID", "Party", "Escalated by", "Escalated on", "Escalated to", "Responded by", "Responded on", "Response Lag", "Action Taken", "Status"],
+        rows: l1.map((row) => [row.title, row.subtitle, row.by, formatAuditStamp(row.receivedAt), row.to, row.respondedBy || "No response", formatAuditStamp(row.responseAt) || "No Response", row.lag, row.action, row.responded ? "Responded" : "No Response"]),
       },
       {
         name: "Escalation 2 — Executive",
-        cols: ["CommID", "Party", "Escalated To", "Escalation Received", "Response", "Response Lag", "Action Taken", "Status"],
-        rows: l2.map((row) => [row.title, row.subtitle, row.to, formatAuditStamp(row.receivedAt), formatAuditStamp(row.responseAt) || "No Response", row.lag, row.action, row.responded ? "Responded" : "No Response"]),
+        cols: ["CommID", "Party", "Escalated by", "Escalated on", "Escalated to", "Responded by", "Responded on", "Response Lag", "Action Taken", "Status"],
+        rows: l2.map((row) => [row.title, row.subtitle, row.by, formatAuditStamp(row.receivedAt), row.to, row.respondedBy || "No response", formatAuditStamp(row.responseAt) || "No Response", row.lag, row.action, row.responded ? "Responded" : "No Response"]),
       },
     ]);
   }
@@ -160,7 +169,7 @@ export function CommunicationAuditScreen({
         <button className="btn btn-outline" type="button" onClick={exportCsv}>Export CSV</button>
       </PageHead>
       <div className="callout">
-        Read-only compliance view. Response performance is measured from the <b>communication received date and time</b> to the first response, against a <b>24-hour standard</b>. Escalation 1 and 2 each show received time, response time and action taken; an escalation with no response is flagged <b>No Response</b>.
+        Read-only compliance view. Each communication shows the <b>owner</b>, who <b>responded</b>, and when. Each escalation shows who escalated it, when, who responded, and when. A row with no response leaves that person accountable. Response time is measured from receipt against a <b>24-hour standard</b>.
       </div>
       <div className="kpis">
         <Kpi acc="var(--ok)" label="Responded within 24 hours" value={kpis.within} detail={`of ${kpis.total} communications`} onClick={() => setResponse("Within 24h")} />
@@ -201,7 +210,7 @@ export function CommunicationAuditScreen({
         <span className="fnote">{filtered.length} shown</span>
       </div>
       <DataTable
-        cols={["CommID", "External Party", "Category", "Criticality", "Subject Keyword", "Comm Date & Time", "Response Date & Time", "Response Action", "Status", "Response SLA"]}
+        cols={["CommID", "External Party", "Category", "Criticality", "Subject Keyword", "Comm Date & Time", "Owner", "Responded by", "Responded on", "Response Action", "Status", "Response SLA"]}
         rows={filtered.map((row) => ({
           key: row.key,
           onClick: () => onOpen(row.source),
@@ -231,6 +240,8 @@ function commCells(row: CommAuditRow) {
     critBadge(row.criticality),
     row.keyword || "—",
     <span className="mono" key="rec">{formatAuditStamp(row.receivedAt) || "—"}</span>,
+    personCell(row.owner, !row.responseAt),
+    row.respondedBy || "—",
     row.responseAt ? <span className="mono" key="resp">{formatAuditStamp(row.responseAt)}</span> : responseBadge(false),
     row.responseAction,
     <span key="st">{statusBadge(row.status)}{lockTag(row.closed)}</span>,
@@ -300,6 +311,12 @@ export function NotificationAuditScreen({
   const l1 = escalations.filter((row) => row.level === "L1");
   const l2 = escalations.filter((row) => row.level === "L2");
   const waiting = (list: AuditEscalation[]) => list.filter((row) => !row.responded).length;
+  const noticeRows = useMemo(() => notices
+    .map((notice) => ({ notice, duty: noticeDuty(notice, docs, renewals) }))
+    .filter(({ notice, duty }) => {
+      const hit = matchesSearch(q, notice.title, notice.documentName, notice.owner, notice.message, duty.respondedBy, duty.responsible);
+      return hit && inDateRange(notice.sentOn, from, to);
+    }), [notices, docs, renewals, q, from, to]);
 
   async function runAction(id: string, label: string, work: () => Promise<unknown>) {
     setWorking(id + label);
@@ -337,13 +354,21 @@ export function NotificationAuditScreen({
       },
       {
         name: "Escalation 1 — Department",
-        cols: ["Document", "Department", "Escalated To", "Escalation Received", "Response", "Response Lag", "Action Taken", "Status"],
-        rows: l1.map((row) => [row.title, row.subtitle, row.to, formatAuditStamp(row.receivedAt), formatAuditStamp(row.responseAt) || "No Response", row.lag, row.action, row.responded ? "Responded" : "No Response"]),
+        cols: ["Document", "Department", "Escalated by", "Escalated on", "Escalated to", "Responded by", "Responded on", "Response Lag", "Action Taken", "Status"],
+        rows: l1.map((row) => [row.title, row.subtitle, row.by, formatAuditStamp(row.receivedAt), row.to, row.respondedBy || "No response", formatAuditStamp(row.responseAt) || "No Response", row.lag, row.action, row.responded ? "Responded" : "No Response"]),
+      },
+      {
+        name: "Each notification",
+        cols: ["Sent on", "Type", "Title", "Document", "Done by", "Responded by", "Responded on"],
+        rows: noticeRows.map(({ notice, duty }) => [
+          formatAuditStamp(notice.sentOn), notice.type, notice.title, notice.documentName || "",
+          duty.responsible, duty.respondedBy || "No response", formatAuditStamp(duty.respondedAt) || "No response",
+        ]),
       },
       {
         name: "Escalation 2 — Executive",
-        cols: ["Document", "Department", "Escalated To", "Escalation Received", "Response", "Response Lag", "Action Taken", "Status"],
-        rows: l2.map((row) => [row.title, row.subtitle, row.to, formatAuditStamp(row.receivedAt), formatAuditStamp(row.responseAt) || "No Response", row.lag, row.action, row.responded ? "Responded" : "No Response"]),
+        cols: ["Document", "Department", "Escalated by", "Escalated on", "Escalated to", "Responded by", "Responded on", "Response Lag", "Action Taken", "Status"],
+        rows: l2.map((row) => [row.title, row.subtitle, row.by, formatAuditStamp(row.receivedAt), row.to, row.respondedBy || "No response", formatAuditStamp(row.responseAt) || "No Response", row.lag, row.action, row.responded ? "Responded" : "No Response"]),
       },
     ]);
   }
@@ -355,7 +380,7 @@ export function NotificationAuditScreen({
         <button className="btn btn-outline" type="button" onClick={exportCsv}>Export CSV</button>
       </PageHead>
       <div className="callout">
-        Insurance contracts and governmental licences. The notification window opens <b>120 days before expiry</b>. A cycle is <b>Closed</b> only when a completion date exists, and <b>Overdue</b> once expiry passes without one. Escalation 1 and 2 show received time, response time and action taken, with <b>No Response</b> where none was given.
+        Each notification shows who it was sent for and when, and who responded and when. Each escalation shows who escalated it and when. A cycle is <b>Closed</b> only when a completion date exists, and <b>Overdue</b> once expiry passes without one. The notification window opens <b>120 days before expiry</b>.
       </div>
       <div className="kpis">
         <Kpi acc="var(--warn)" label="Due within 120 days" value={summary.due} detail="Notification window open" onClick={() => setStatus("Due within 120 days")} />
@@ -447,6 +472,27 @@ export function NotificationAuditScreen({
             <span className="strong-bad mono" key="days">{row.daysOverdue}</span>,
             row.notifiedAt ? <span className="mono" key="nt">{formatAuditStamp(row.notifiedAt)}</span> : <span className="badge b-warn" key="nt">Not sent</span>,
             statusBadge("Overdue"),
+          ],
+        }))}
+      />
+      <h2 className="sec">Each notification ({noticeRows.length})</h2>
+      <DataTable
+        cols={["Sent on", "Type", "Title", "Document", "Done by", "Responded by", "Responded on", "Accountability"]}
+        rows={noticeRows.map(({ notice, duty }) => ({
+          key: notice.recordId || notice.id,
+          onClick: () => {
+            const doc = docs.find((row) => row.recordId === notice.documentId || row.id === notice.documentId || row.name === notice.documentName);
+            if (doc) onOpen(doc);
+          },
+          cells: [
+            <span className="mono" key="sent">{formatAuditStamp(notice.sentOn) || "—"}</span>,
+            statusBadge(notice.type),
+            notice.title,
+            notice.documentName || "—",
+            personCell(duty.responsible, !duty.responded),
+            duty.respondedBy || "—",
+            duty.respondedAt ? <span className="mono" key="at">{formatAuditStamp(duty.respondedAt)}</span> : "—",
+            responseBadge(duty.responded),
           ],
         }))}
       />

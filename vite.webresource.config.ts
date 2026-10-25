@@ -45,7 +45,7 @@ function inlineSingleHtml(): Plugin {
       html = html.replace(
         "<head>",
         () => `<head>
-    <!-- Andalusia Pulse WR-15. Upload this file. Look for WR-15-shared in the bottom-right. -->`,
+    <!-- Andalusia Pulse web resource. Same app as the Code App. -->`,
       );
 
       writeFileSync(htmlPath, html);

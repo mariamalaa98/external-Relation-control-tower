@@ -1,5 +1,5 @@
 /**
- * Mirrors the four External Relations Power Automate cloud flows.
+ * Mirrors External Relations Power Automate cloud flows.
  * The app writes the Dataverse fields these flows listen to; it does not send the emails itself.
  */
 
@@ -19,13 +19,40 @@ export const FLOWS = {
     emailFilter: "_regardingobjectid_value ne null",
     activityPartyFilter: (activityId: string) =>
       `_activityid_value eq ${activityId} and _partyid_value eq ${CENTRAL_MAILBOX_PARTY_ID} and participationtypemask eq ${TO_RECIPIENT}`,
-    partyLookup: (sender: string) => `erc_officialemail eq '${sender.replace(/'/g, "''")}'`,
+    partyLookup: (sender: string) => {
+      const domain = (sender.split("@").pop() || "").replace(/'/g, "''").toLowerCase();
+      return `(erc_domain eq '${domain}' or erc_domain eq '@${domain}' or endswith(erc_officialemail,'@${domain}')) and _erc_replyresponsible_value ne null and statecode eq 0`;
+    },
+    /** Create the communication only when the matched external party status is Active. */
+    partyStatus: "Active",
+  },
+  /**
+   * Runs when a communication row is added. Emails the responsible team.
+   * Does not start the escalation chain.
+   */
+  notifyResponsibleTeam: {
+    name: "External relations - Notify responsible team",
+    trigger: "When a row is added on Communications (erc_communication)",
+    /** Skip a communication that is already closed. */
+    filter: "erc_lifecyclestatus ne 4",
+    /**
+     * Reply Responsible team on the external party: the team group mailbox,
+     * every member, and the team administrator.
+     * The party is read from the saved communication row.
+     */
+    teamLookup: "erc_externalparty / erc_replyresponsible",
   },
   autoEscalation: {
     name: "External relations - Automatic Communication Escalations",
     recurrence: "every 10 minutes",
-    /** Overdue formula (Created On + 2 hours) AND not yet locked AND not Closed. */
-    filter: "erc_isoverdue eq true and erc_isescalated ne true and erc_lifecyclestatus ne 4",
+    /**
+     * The responsible team is already notified on create. This flow starts or
+     * continues the chain only while the communication is still open.
+     * First level only when the overdue text contains "Overdue" and the row was
+     * created on or after the 22 Oct 2026 go-live cutoff. Later levels only when
+     * erc_nextescalationon is set and due. The flow is saved as a draft and left off.
+     */
+    filter: "erc_lifecyclestatus ne 4 and (((erc_escalationstep eq null or erc_escalationstep eq 0) and contains(erc_isoverdue,'Overdue') and createdon ge 2026-10-22T11:20:00Z) or (erc_escalationstep gt 0 and erc_nextescalationon ne null and erc_nextescalationon le @{utcNow()}))",
   },
   manualEscalation: {
     name: "External relations - Communications Manual Escalation",
@@ -37,12 +64,30 @@ export const FLOWS = {
     triggerColumn: "erc_lifecyclestatus",
     filter: "erc_lifecyclestatus eq 4",
   },
+  /**
+   * Email only. Threshold, renewal tasks, Reminder sent, and escalation stay in
+   * runLicenseMonitor() (src/data/licenseLogic.ts + store.ts). Do not rebuild
+   * those rules in Power Automate.
+   */
+  licenseNotificationEmail: {
+    name: "External relations - Send license notification email",
+    trigger: "When a row is added on Notifications (erc_notification)",
+    filter: "_erc_licenseandcontract_value ne null",
+    ownerTable: "systemusers",
+    ownerEmailField: "internalemailaddress",
+  },
 } as const;
 
 export function matchesAutoEscalationFilter(row: {
   isOverdue: boolean;
-  isEscalated: boolean;
   status: string;
-}) {
-  return row.isOverdue && !row.isEscalated && row.status !== "Closed";
+  escalationStep?: number;
+  nextEscalationOn?: string;
+}, now = new Date()) {
+  if (row.status === "Closed") return false;
+  const step = row.escalationStep || 0;
+  if (step <= 0) return row.isOverdue;
+  if (!row.nextEscalationOn) return false;
+  const due = new Date(row.nextEscalationOn);
+  return !Number.isNaN(due.getTime()) && due.getTime() <= now.getTime();
 }

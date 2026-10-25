@@ -21,7 +21,8 @@ export const SUPS = ["Dr. Bassam Farid", "Yasser Mahmoud", "Mona ElSayed"] as co
 export const MAILBOX_PROD = "AndalusiaKSA-FU@andalusiagroup.net";
 export const MAILBOX_TEST = "mariam.alaa@andalusiagroup.net";
 export const MAILBOX_MAHA = "maha.hakim@andalusiagroup.net";
-export const CENTRAL_MAILBOX_ADDRESSES = [MAILBOX_PROD, MAILBOX_TEST, MAILBOX_MAHA] as const;
+/** Central Mailbox lists mail sent to this address only. */
+export const CENTRAL_MAILBOX_ADDRESSES = [MAILBOX_PROD] as const;
 
 export type Category = (typeof CATS)[number];
 export type Priority = (typeof PRIS)[number] | "None";
@@ -46,6 +47,43 @@ export type SlaRule = {
   active: boolean;
 };
 
+export const MATCH_BASES = ["Domain", "Keyword", "Party"] as const;
+export type MatchBasis = (typeof MATCH_BASES)[number];
+
+export type RoutingRule = {
+  id: string;
+  name: string;
+  basis: MatchBasis;
+  value: string;
+  category: Category;
+  owner: string;
+  priority: Priority;
+  active: boolean;
+};
+
+export type EscalationRule = {
+  id: string;
+  trigger: string;
+  afterDays: number;
+  level: "L1" | "L2";
+  escalateTo: string;
+  channels: string;
+  active: boolean;
+};
+
+/** One person on a level of erc_esclationchain. Same sequence = same level. */
+export type EscalationChain = {
+  id: string;
+  name: string;
+  sequence: number;
+  waitHours?: number;
+  userId?: string;
+  userName?: string;
+  teamId?: string;
+  teamName?: string;
+  active: boolean;
+};
+
 export type BusinessUnitRef = { id: string; name: string };
 export type DepartmentRef = { id: string; name: string; companyId?: string; companyName?: string };
 
@@ -53,6 +91,8 @@ export type Party = {
   id: string;
   name: string;
   category: Category;
+  /** True when the party record itself has a category. */
+  categorySet?: boolean;
   email: string;
   domain: string;
   bu: string;
@@ -62,6 +102,11 @@ export type Party = {
   owner: string;
   criticality: "High" | "Medium" | "Low";
   status: "Draft" | "Active" | "Inactive";
+  escalationTeam?: string;
+  escalationTeamId?: string;
+  /** Reply Responsible team on the external party. */
+  responsibleTeam?: string;
+  responsibleTeamId?: string;
 };
 
 export type LogEntry = { title: string; meta: string };
@@ -152,6 +197,12 @@ export type Communication = {
   isManuallyEscalated: boolean;
   escalatedBy?: string;
   escalationReason?: string;
+  /** Current level on the escalation chain. 0 means the chain has not started. */
+  escalationStep?: number;
+  lastEscalatedOn?: string;
+  nextEscalationOn?: string;
+  currentRecipient?: string;
+  currentRecipientId?: string;
   threadId?: string;
   conversationIndex?: string;
   emailActivityId?: string;
@@ -286,7 +337,10 @@ export type Store = {
   error?: string;
   warnings?: string[];
   sla: SlaRule[];
+  routingRules: RoutingRule[];
+  escalationRules: EscalationRule[];
   parties: Party[];
+  escalationChains: EscalationChain[];
   comms: Communication[];
   docs: License[];
   renewals: Renewal[];
