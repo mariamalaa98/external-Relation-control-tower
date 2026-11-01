@@ -219,6 +219,12 @@ button.row-x{border:none;background:transparent;color:var(--muted);font-size:16p
 button.row-x:hover{color:var(--bad)}
 .tabs + .tablewrap{border-top-left-radius:0;border-top-right-radius:0}
 .accountable{color:var(--bad);font-weight:600}
+.metric-n{font-size:18px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1.1}
+.metric-sub{font-size:11px;color:var(--muted);margin-top:3px}
+.person-list{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}
+.person-chip{font-size:11px;line-height:1.3;padding:2px 7px;border-radius:999px;background:var(--line-2);color:var(--ink)}
+.person-chip.open{background:var(--badbg);color:var(--bad);font-weight:600}
+.person-chip.done{background:var(--okbg);color:var(--ok)}
 
 .sumbar{display:flex;gap:30px;padding:15px 18px;margin-top:14px;font-size:13px;align-items:center;
   border-left:3px solid var(--gold)}

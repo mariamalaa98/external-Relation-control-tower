@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import {
+  PRIORITY_BANDS,
   commAuditRow,
   commCompliance,
   communicationEscalations,
@@ -7,6 +8,8 @@ import {
   formatAuditStamp,
   inDateRange,
   noticeDuty,
+  noticeSubject,
+  priorityBand,
   renewalAuditRow,
   renewalEscalations,
   renewalSummary,
@@ -17,12 +20,7 @@ import {
 } from "../data/auditLogic";
 import { completeCycle, matchesSearch, sendRenewalNotice } from "../data/store";
 import { CATS, type AuditRow, type Communication, type License, type Notice, type Party, type Renewal, type ThreadEmail } from "../data/types";
-import { DataTable, FilterField, Kpi, PageHead, catBadge, statusBadge } from "./widgets";
-
-function critBadge(level: string) {
-  const tone = level === "High" ? "b-bad" : level === "Medium" ? "b-warn" : "b-gray";
-  return <span className={`badge ${tone}`}>{level}</span>;
-}
+import { DataTable, FilterField, Kpi, PageHead, catBadge, priBadge, statusBadge } from "./widgets";
 
 function deptBadge(level: string) {
   return <span className={`badge ${level === "Insurance" ? "b-gold" : "b-info"}`}>{level}</span>;
@@ -60,6 +58,25 @@ function downloadCsv(name: string, sections: { name: string; cols: string[]; row
   link.download = name;
   link.click();
   URL.revokeObjectURL(url);
+}
+
+function rangeText(from: string, to: string) {
+  if (from && to) return `${from} to ${to}`;
+  if (from) return `from ${from}`;
+  if (to) return `through ${to}`;
+  return "all dates";
+}
+
+function exportName(prefix: string, from: string, to: string) {
+  if (!from && !to) return `${prefix}-all-dates.csv`;
+  return `${prefix}-${from || "start"}_to_${to || "end"}.csv`;
+}
+
+function exportLabel(from: string, to: string) {
+  if (from && to) return `Export ${from} → ${to}`;
+  if (from) return `Export from ${from}`;
+  if (to) return `Export through ${to}`;
+  return "Export all dates";
 }
 
 function personCell(name: string, accountable: boolean) {
@@ -119,31 +136,40 @@ export function CommunicationAuditScreen({
     [comms, audits, threads],
   );
   const kpis = useMemo(() => commCompliance(rows), [rows]);
-  const filtered = useMemo(() => rows.filter((row) => {
+  const dated = useMemo(() => rows.filter((row) => {
     const hit = matchesSearch(q, row.commId, row.party, row.keyword, row.responseAction, row.category, row.source.subj, row.owner, row.respondedBy);
+    return hit && inDateRange(row.receivedAt, from, to);
+  }), [rows, q, from, to]);
+  const filtered = useMemo(() => dated.filter((row) => {
     const stateOk = response === "All" || (response === "Within 24h" ? row.within24 : !row.within24);
-    return hit
-      && stateOk
+    const band = priorityBand(row.source.pri);
+    return stateOk
       && (category === "All" || row.category === category)
-      && (criticality === "All" || row.criticality === criticality)
-      && inDateRange(row.receivedAt, from, to);
-  }), [rows, q, from, to, category, criticality, response]);
-  const escalations = useMemo(
-    () => comms.flatMap((comm) => communicationEscalations(comm, audits, threads)),
-    [comms, audits, threads],
-  );
+      && (criticality === "All" || band === criticality);
+  }), [dated, category, criticality, response]);
+  const escalations = useMemo(() => {
+    const ids = new Set(filtered.map((row) => row.commId));
+    return comms
+      .filter((comm) => ids.has(comm.id))
+      .flatMap((comm) => communicationEscalations(comm, audits, threads));
+  }, [comms, audits, threads, filtered]);
   const l1 = escalations.filter((row) => row.level === "L1");
   const l2 = escalations.filter((row) => row.level === "L2");
   const waiting = (list: AuditEscalation[]) => list.filter((row) => !row.responded).length;
 
   function exportCsv() {
-    const today = new Date().toISOString().slice(0, 10);
-    downloadCsv(`communication-audit-${today}.csv`, [
+    const scope = rangeText(from, to);
+    downloadCsv(exportName("communication-audit", from, to), [
+      {
+        name: `Export scope — ${scope}`,
+        cols: ["From", "To", "Category filter", "Criticality filter", "Response filter", "Register rows"],
+        rows: [[from || "All dates", to || "All dates", category, criticality, response, String(filtered.length)]],
+      },
       {
         name: "Communication register",
         cols: ["CommID", "External Party", "Category", "Criticality", "Subject Keyword", "Comm Date & Time", "Owner", "Responded by", "Response Date & Time", "Response Action", "Status", "Response SLA"],
         rows: filtered.map((row) => [
-          row.commId, row.party, row.category, row.criticality, row.keyword,
+          row.commId, row.party, row.category, priorityBand(row.source.pri), row.keyword,
           formatAuditStamp(row.receivedAt), row.owner, row.respondedBy || "No response",
           formatAuditStamp(row.responseAt) || "No Response",
           row.responseAction, row.status, row.within24 ? "Within 24h" : "Delayed",
@@ -164,12 +190,12 @@ export function CommunicationAuditScreen({
 
   return (
     <>
-      <PageHead title="Communication Audit View" sub={`Read-only · ${rows.length} records · 24-hour response standard`}>
+      <PageHead title="Communication Audit View" sub={`Read-only · ${rows.length} records · export uses ${rangeText(from, to)}`}>
         <button className="btn btn-ghost" type="button" disabled={busy} onClick={onRefresh}>↻ Refresh</button>
-        <button className="btn btn-outline" type="button" onClick={exportCsv}>Export CSV</button>
+        <button className="btn btn-outline" type="button" onClick={exportCsv}>{exportLabel(from, to)}</button>
       </PageHead>
       <div className="callout">
-        Read-only compliance view. Each communication shows the <b>owner</b>, who <b>responded</b>, and when. Each escalation shows who escalated it, when, who responded, and when. A row with no response leaves that person accountable. Response time is measured from receipt against a <b>24-hour standard</b>.
+        Read-only compliance view. Each communication shows the <b>owner</b>, who <b>responded</b>, and when. Each escalation shows who escalated it, when, who responded, and when. A row with no response leaves that person accountable. Response time is measured from receipt against a <b>24-hour standard</b>. Category totals and the criticality report are on the Report page.
       </div>
       <div className="kpis">
         <Kpi acc="var(--ok)" label="Responded within 24 hours" value={kpis.within} detail={`of ${kpis.total} communications`} onClick={() => setResponse("Within 24h")} />
@@ -195,9 +221,7 @@ export function CommunicationAuditScreen({
         <FilterField label="Criticality">
           <select value={criticality} onChange={(e) => setCriticality(e.target.value)}>
             <option>All</option>
-            <option>High</option>
-            <option>Medium</option>
-            <option>Low</option>
+            {PRIORITY_BANDS.map((level) => <option key={level}>{level}</option>)}
           </select>
         </FilterField>
         <FilterField label="Response">
@@ -207,7 +231,7 @@ export function CommunicationAuditScreen({
             <option>Delayed</option>
           </select>
         </FilterField>
-        <span className="fnote">{filtered.length} shown</span>
+        <span className="fnote">{filtered.length} shown · {rangeText(from, to)}</span>
       </div>
       <DataTable
         cols={["CommID", "External Party", "Category", "Criticality", "Subject Keyword", "Comm Date & Time", "Owner", "Responded by", "Responded on", "Response Action", "Status", "Response SLA"]}
@@ -237,7 +261,7 @@ function commCells(row: CommAuditRow) {
     row.commId,
     row.party,
     catBadge(row.category),
-    critBadge(row.criticality),
+    priBadge(priorityBand(row.source.pri)),
     row.keyword || "—",
     <span className="mono" key="rec">{formatAuditStamp(row.receivedAt) || "—"}</span>,
     personCell(row.owner, !row.responseAt),
@@ -287,7 +311,6 @@ export function NotificationAuditScreen({
     [docs, notices, renewals, parties],
   );
   const summary = useMemo(() => renewalSummary(rows), [rows]);
-  const weeks = useMemo(() => weeklyCompletions(rows), [rows]);
   const units = useMemo(() => [...new Set(rows.map((row) => row.bu).filter((name) => name && name !== "—"))].sort(), [rows]);
   const filtered = useMemo(() => rows.filter((row) => {
     const hit = matchesSearch(q, row.name, row.bu, row.department, row.orgDepartment, row.type, row.source.id, row.source.party);
@@ -300,23 +323,38 @@ export function NotificationAuditScreen({
       && (bu === "All" || row.bu === bu)
       && inDateRange(row.expiry, from, to);
   }), [rows, q, from, to, department, type, status, bu]);
-  const overdue = rows.filter((row) => row.status === "Overdue");
-  const escalations = useMemo(
-    () => docs.flatMap((doc) => {
+  const weeks = useMemo(() => weeklyCompletions(filtered), [filtered]);
+  const overdue = filtered.filter((row) => row.status === "Overdue");
+  const escalations = useMemo(() => {
+    const keys = new Set(filtered.map((row) => row.key));
+    return docs.flatMap((doc) => {
       const row = rows.find((item) => item.key === (doc.recordId || doc.id));
-      return row ? renewalEscalations(doc, row, notices, renewals) : [];
-    }),
-    [docs, rows, notices, renewals],
-  );
+      if (!row || !keys.has(row.key)) return [];
+      return renewalEscalations(doc, row, notices, renewals);
+    });
+  }, [docs, rows, notices, renewals, filtered]);
   const l1 = escalations.filter((row) => row.level === "L1");
   const l2 = escalations.filter((row) => row.level === "L2");
   const waiting = (list: AuditEscalation[]) => list.filter((row) => !row.responded).length;
-  const noticeRows = useMemo(() => notices
-    .map((notice) => ({ notice, duty: noticeDuty(notice, docs, renewals) }))
-    .filter(({ notice, duty }) => {
-      const hit = matchesSearch(q, notice.title, notice.documentName, notice.owner, notice.message, duty.respondedBy, duty.responsible);
-      return hit && inDateRange(notice.sentOn, from, to);
-    }), [notices, docs, renewals, q, from, to]);
+  const noticePacks = useMemo(() => notices.map((notice) => {
+    const duty = noticeDuty(notice, docs, renewals);
+    const subject = noticeSubject(notice, docs, parties);
+    const docKey = subject.doc ? (subject.doc.recordId || subject.doc.id) : "";
+    const cycle = docKey ? rows.find((item) => item.key === docKey) : undefined;
+    return { notice, duty, subject, cycle };
+  }), [notices, docs, renewals, parties, rows]);
+  const noticeDated = useMemo(() => noticePacks.filter(({ notice, duty, subject }) => {
+    const hit = matchesSearch(q, notice.title, notice.documentName, notice.owner, notice.message, duty.respondedBy, duty.responsible, subject.category, subject.criticality);
+    return hit && inDateRange(notice.sentOn, from, to);
+  }), [noticePacks, q, from, to]);
+  const noticeRows = useMemo(() => noticeDated.filter(({ cycle }) => {
+    if (!cycle) return department === "All" && type === "All" && status === "All" && bu === "All";
+    const statusOk = status === "All" || (status === "Due within 120 days" ? cycle.inWindow : cycle.status === status);
+    return statusOk
+      && (department === "All" || cycle.department === department)
+      && (type === "All" || cycle.type === type)
+      && (bu === "All" || cycle.bu === bu);
+  }), [noticeDated, department, type, status, bu]);
 
   async function runAction(id: string, label: string, work: () => Promise<unknown>) {
     setWorking(id + label);
@@ -331,8 +369,13 @@ export function NotificationAuditScreen({
   }
 
   function exportCsv() {
-    const today = new Date().toISOString().slice(0, 10);
-    downloadCsv(`notification-audit-${today}.csv`, [
+    const scope = rangeText(from, to);
+    downloadCsv(exportName("notification-audit", from, to), [
+      {
+        name: `Export scope — ${scope}`,
+        cols: ["From", "To", "Department filter", "Type filter", "Status filter", "Business unit filter", "Renewal rows", "Notifications"],
+        rows: [[from || "All dates", to || "All dates", department, type, status, bu, String(filtered.length), String(noticeDated.length)]],
+      },
       {
         name: "Renewal cycles",
         cols: ["Business Unit", "Related Department", "Renewal Type", "Document", "Expiry Date", "Notification Start (E-120)", "Notification Date", "Renewal Completion", "Current Status"],
@@ -375,12 +418,12 @@ export function NotificationAuditScreen({
 
   return (
     <>
-      <PageHead title="Notification Audit View" sub={`Insurance contracts & governmental licences · ${rows.length} renewal cycles`}>
+      <PageHead title="Notification Audit View" sub={`Insurance contracts & governmental licences · ${rows.length} renewal cycles · export uses ${rangeText(from, to)}`}>
         <button className="btn btn-ghost" type="button" disabled={busy} onClick={onRefresh}>↻ Refresh</button>
-        <button className="btn btn-outline" type="button" onClick={exportCsv}>Export CSV</button>
+        <button className="btn btn-outline" type="button" onClick={exportCsv}>{exportLabel(from, to)}</button>
       </PageHead>
       <div className="callout">
-        Each notification shows who it was sent for and when, and who responded and when. Each escalation shows who escalated it and when. A cycle is <b>Closed</b> only when a completion date exists, and <b>Overdue</b> once expiry passes without one. The notification window opens <b>120 days before expiry</b>.
+        Each notification shows who it was sent for and when, and who responded and when. Each escalation shows who escalated it and when. A cycle is <b>Closed</b> only when a completion date exists, and <b>Overdue</b> once expiry passes without one. The notification window opens <b>120 days before expiry</b>. Category totals and the criticality report are on the Report page.
       </div>
       <div className="kpis">
         <Kpi acc="var(--warn)" label="Due within 120 days" value={summary.due} detail="Notification window open" onClick={() => setStatus("Due within 120 days")} />
@@ -428,7 +471,7 @@ export function NotificationAuditScreen({
             {units.map((name) => <option key={name}>{name}</option>)}
           </select>
         </FilterField>
-        <span className="fnote">{filtered.length} shown</span>
+        <span className="fnote">{filtered.length} renewals · {noticeRows.length} notifications · {rangeText(from, to)}</span>
       </div>
       <DataTable
         cols={["Business Unit", "Related Department", "Renewal Type", "Document", "Expiry Date", "Notification Start (E-120)", "Notification Date", "Renewal Completion", "Current Status", "Action"]}

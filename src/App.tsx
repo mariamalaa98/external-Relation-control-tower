@@ -57,6 +57,7 @@ import { AdminConfiguration } from "./ui/admin";
 import { SystemEscalationCenter } from "./ui/escalation";
 import { DocumentArchiveScreen } from "./ui/archive";
 import { CommunicationAuditScreen, NotificationAuditScreen } from "./ui/audit";
+import { ReportScreen } from "./ui/report";
 
 const NAV = [
   { area: "ops", group: "COMMAND CENTER", items: [
@@ -86,7 +87,7 @@ const NAV = [
     { id: "admin", ico: "⚙", text: "Admin Configuration" },
   ]},
   { area: "gov", group: "REPORTS", items: [
-    { id: "reports", ico: "📊", text: "Power BI Reports" },
+    { id: "reports", ico: "📊", text: "Report" },
   ]},
   { area: "gov", group: "AUDIT", items: [
     { id: "auditComm", ico: "🔍", text: "Communication Audit" },
@@ -698,18 +699,15 @@ export default function App() {
           )}
 
           {screen === "reports" && (
-            <>
-              <PageHead title="Power BI Reports" sub="Operational counts from the same Dataverse tables. Embed a Power BI report here when the workspace is ready." />
-              <div className="kpis">
-                <Kpi acc="var(--bronze)" label="Communications" value={kpi(scopedComms.length)} detail="erc_communication" onClick={() => go("tracker")} />
-                <Kpi acc="var(--info)" label="Licenses" value={kpi(scopedDocs.length)} detail="erc_licenseandcontract" onClick={() => go("licenses")} />
-                <Kpi acc="var(--warn)" label="Archive files" value={kpi(db.archives.length)} detail="erc_documentarchive" onClick={() => go("archive")} />
-                <Kpi acc="var(--ok)" label="Audit events" value={kpi(db.audits.length)} detail="erc_communicationaudit" onClick={() => go("auditComm")} />
-                <Kpi acc="var(--info)" label="Notices" value={kpi(db.notices.length)} detail="erc_notification" onClick={() => go("notifications")} />
-                <Kpi acc="var(--bad)" label="Overdue" value={kpi(breached.length)} detail="Is OverDue" onClick={() => go("escalation")} />
-              </div>
-              <div className="callout">These figures are live from Dataverse. A published Power BI report can replace this page later without adding a table.</div>
-            </>
+            <ReportScreen
+              comms={scopedComms}
+              audits={db.audits}
+              threads={db.threadByComm}
+              docs={scopedDocs}
+              notices={db.notices}
+              renewals={db.renewals}
+              parties={scopedParties}
+            />
           )}
         </main>
       </div>

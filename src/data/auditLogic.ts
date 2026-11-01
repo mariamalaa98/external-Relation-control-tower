@@ -11,6 +11,8 @@ export const L1_UNRESOLVED_DAYS = 2;
 export const RENEWAL_L2_DAYS = 7;
 
 export type Criticality = "High" | "Medium" | "Low";
+export const PRIORITY_BANDS = ["Critical", "High", "Medium", "Low"] as const;
+export type PriorityBand = (typeof PRIORITY_BANDS)[number];
 export type CycleStatus = "Open" | "Closed" | "Overdue";
 export type AuditDepartment = "Insurance" | "Governmental";
 
@@ -204,6 +206,102 @@ export function criticalityOf(priority: string): Criticality {
   return "Low";
 }
 
+/** Keeps Critical separate from High so the audit dashboard can show each type. */
+export function priorityBand(priority: string): PriorityBand {
+  if (priority === "Critical" || priority === "High" || priority === "Medium" || priority === "Low") return priority;
+  return "Low";
+}
+
+export type AuditFact = {
+  group: string;
+  level: string;
+  replied: boolean;
+  owner: string;
+  respondedBy: string;
+};
+
+export type PersonLoad = {
+  name: string;
+  sent: number;
+  replied: number;
+  open: number;
+};
+
+export type ReplyGroup = {
+  key: string;
+  sent: number;
+  replied: number;
+  notReplied: number;
+  personsReplied: PersonLoad[];
+  personsOpen: PersonLoad[];
+};
+
+export type LevelResponsibility = {
+  level: string;
+  sent: number;
+  replied: number;
+  notReplied: number;
+  people: PersonLoad[];
+};
+
+function personName(value: string) {
+  const name = value.trim();
+  return name || "Unassigned";
+}
+
+function loadsFor(items: AuditFact[], who: (item: AuditFact) => string): PersonLoad[] {
+  const map = new Map<string, PersonLoad>();
+  for (const item of items) {
+    const name = personName(who(item));
+    const row = map.get(name) || { name, sent: 0, replied: 0, open: 0 };
+    row.sent += 1;
+    if (item.replied) row.replied += 1;
+    else row.open += 1;
+    map.set(name, row);
+  }
+  return [...map.values()].sort((a, b) => b.open - a.open || b.sent - a.sent || a.name.localeCompare(b.name));
+}
+
+function orderedKeys(items: AuditFact[], order: readonly string[], pick: (item: AuditFact) => string) {
+  const keys = [...order];
+  for (const item of items) {
+    const key = pick(item);
+    if (key && !keys.includes(key)) keys.push(key);
+  }
+  return keys;
+}
+
+/** Per category: communications or notices sent, who replied, and who has not. */
+export function groupReplies(items: AuditFact[], order: readonly string[]): ReplyGroup[] {
+  return orderedKeys(items, order, (item) => item.group).map((key) => {
+    const list = items.filter((item) => item.group === key);
+    const repliedItems = list.filter((item) => item.replied);
+    const openItems = list.filter((item) => !item.replied);
+    return {
+      key,
+      sent: list.length,
+      replied: repliedItems.length,
+      notReplied: openItems.length,
+      personsReplied: loadsFor(repliedItems, (item) => item.respondedBy || item.owner),
+      personsOpen: loadsFor(openItems, (item) => item.owner),
+    };
+  });
+}
+
+/** Per criticality: volume plus the responsible person and whether they replied. */
+export function responsibilityByLevel(items: AuditFact[], order: readonly string[]): LevelResponsibility[] {
+  return orderedKeys(items, order, (item) => item.level).map((level) => {
+    const list = items.filter((item) => item.level === level);
+    return {
+      level,
+      sent: list.length,
+      replied: list.filter((item) => item.replied).length,
+      notReplied: list.filter((item) => !item.replied).length,
+      people: loadsFor(list, (item) => item.owner),
+    };
+  });
+}
+
 function subjectKeyword(subject: string) {
   return subject
     .trim()
@@ -386,6 +484,21 @@ export function commCompliance(rows: Pick<CommAuditRow, "within24">[]) {
     within,
     delayed: total - within,
     pct: total ? ((within / total) * 100).toFixed(1) : "0.0",
+  };
+}
+
+export function licenseCategory(doc: License, parties: Party[]) {
+  const party = partyOf(doc, parties);
+  if (party?.category) return party.category;
+  return auditDepartment(doc, party) === "Insurance" ? "Insurance" : "Government";
+}
+
+export function noticeSubject(notice: Notice, docs: License[], parties: Party[]) {
+  const doc = docs.find((row) => sameDoc(notice.documentId, row) || (!!notice.documentName && notice.documentName === row.name));
+  return {
+    doc,
+    category: doc ? licenseCategory(doc, parties) : "Unassigned",
+    criticality: doc ? priorityBand(doc.risk) : "Low" as PriorityBand,
   };
 }
 
