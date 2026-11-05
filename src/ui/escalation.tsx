@@ -1,14 +1,19 @@
 import { useMemo, useState } from "react";
 import {
+  PRIORITY_BANDS,
   communicationDuty,
   communicationEscalations,
   formatAuditStamp,
+  inDateRange,
+  licenseCategory,
   licenseDuty,
+  priorityBand,
   renewalAuditRow,
   renewalEscalations,
 } from "../data/auditLogic";
+import { downloadExcel, exportFileName, exportLabel, rangeText } from "../data/excelExport";
 import { canManualEscalate, docState, formatDateTime, useStore } from "../data/store";
-import type { Communication, License } from "../data/types";
+import { CATS, type Communication, type License } from "../data/types";
 import { DataTable, FilterField, Kpi } from "./widgets";
 
 type SourceFilter = "All" | "Communication" | "License";
@@ -19,6 +24,9 @@ type EscalationRow = {
   source: "Communication" | "License";
   title: string;
   detail: string;
+  category: string;
+  criticality: string;
+  closed: boolean;
   owner: string;
   to: string;
   when?: string;
@@ -59,7 +67,12 @@ export function SystemEscalationCenter({
   onEscalateDoc: (row: License) => void;
 }) {
   const db = useStore();
-  const [source, setSource] = useState<SourceFilter>("All");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [category, setCategory] = useState("All");
+  const [status, setStatus] = useState("All");
+  const [criticality, setCriticality] = useState("All");
+  const [source, setSource] = useState<SourceFilter>("Communication");
   const [response, setResponse] = useState<ResponseFilter>("All");
 
   const rows = useMemo(() => {
@@ -67,18 +80,21 @@ export function SystemEscalationCenter({
       const escalated = !!(comm.isEscalated || comm.isAutomaticallyEscalated || comm.isManuallyEscalated);
       const pending = comm.status !== "Closed" && comm.isOverdue && !comm.isEscalated;
       if (!escalated && !pending) return [];
-      const levels = communicationEscalations(comm, db.audits, db.threadByComm);
+      const levels = communicationEscalations(comm, db.audits, db.threadByComm, new Date(), db.parties, db.escalationChains);
       const top = levels[levels.length - 1];
-      const duty = communicationDuty(comm, db.audits, db.threadByComm);
+      const duty = communicationDuty(comm, db.audits, db.threadByComm, db.parties, db.escalationChains);
       const step = comm.escalationStep || 0;
       const allowed = canManualEscalate(comm);
       return [{
         key: comm.recordId || comm.id,
-        source: "Communication",
+        source: "Communication" as const,
         title: comm.id,
         detail: step > 0
           ? `${comm.subj}${comm.nextEscalationOn ? ` · next ${formatDateTime(comm.nextEscalationOn)}` : ""}`
           : comm.subj,
+        category: comm.cat,
+        criticality: "",
+        closed: comm.status === "Closed",
         owner: duty.responsible,
         to: step > 0
           ? `Level ${step}${comm.currentRecipient ? ` · ${comm.currentRecipient}` : ""}`
@@ -106,9 +122,12 @@ export function SystemEscalationCenter({
       const duty = licenseDuty(doc, db.renewals);
       return [{
         key: doc.recordId || doc.id,
-        source: "License",
+        source: "License" as const,
         title: doc.id,
         detail: doc.name,
+        category: licenseCategory(doc, db.parties),
+        criticality: priorityBand(doc.risk),
+        closed: audit.status === "Closed",
         owner: duty.responsible,
         to: top?.to || "Department Head",
         when: top?.receivedAt || doc.expiry,
@@ -126,30 +145,88 @@ export function SystemEscalationCenter({
     return [...commRows, ...docRows];
   }, [comms, docs, db.audits, db.threadByComm, db.notices, db.renewals, db.parties, db.escalationChains, onOpenComm, onOpenDoc, onEscalateComm, onEscalateDoc]);
 
+  const showLicenses = source !== "Communication";
   const filtered = rows.filter((row) => {
-    const blob = `${row.title} ${row.detail} ${row.owner} ${row.to} ${row.by} ${row.respondedBy}`.toLowerCase();
+    const blob = `${row.title} ${row.detail} ${row.owner} ${row.to} ${row.by} ${row.respondedBy} ${row.category}`.toLowerCase();
     const sourceOk = source === "All" || row.source === source;
     const responseOk = response === "All" || (response === "Responded" ? row.responded : !row.responded);
-    return blob.includes(q.toLowerCase()) && sourceOk && responseOk;
+    const categoryOk = category === "All" || row.category === category;
+    const statusOk = status === "All" || (status === "Open" ? !row.closed : row.closed);
+    const criticalityOk = criticality === "All" || row.source !== "License" || row.criticality === criticality;
+    return blob.includes(q.toLowerCase())
+      && sourceOk
+      && responseOk
+      && categoryOk
+      && statusOk
+      && criticalityOk
+      && inDateRange(row.when, from, to);
   });
-  const waiting = rows.filter((row) => !row.responded);
-  const commCount = rows.filter((row) => row.source === "Communication").length;
-  const docCount = rows.filter((row) => row.source === "License").length;
+  const waiting = filtered.filter((row) => !row.responded);
+  const commCount = filtered.filter((row) => row.source === "Communication").length;
+  const docCount = filtered.filter((row) => row.source === "License").length;
+  const scope = rangeText(from, to);
+
+  function exportExcel() {
+    downloadExcel(exportFileName("escalation-center", from, to), [
+      {
+        name: "Filters",
+        cols: ["From", "To", "Category", "Status", "Source", "Response", "License criticality", "Rows"],
+        rows: [[from || "All dates", to || "All dates", category, status, source, response, showLicenses ? criticality : "—", String(filtered.length)]],
+      },
+      {
+        name: "Escalations",
+        cols: ["Source", "Record", "Detail", "Category", "Status", "Owner", "Escalated to", "Escalated on", "Escalated by", "Responded by", "Responded on", "Accountability"],
+        rows: filtered.map((row) => [
+          row.source,
+          row.title,
+          row.detail,
+          row.category,
+          row.closed ? "Closed" : "Open",
+          row.owner,
+          row.to,
+          formatAuditStamp(row.when) || "",
+          row.by,
+          row.respondedBy || "No response",
+          formatAuditStamp(row.respondedAt) || "No response",
+          row.responded ? "Responded" : "No response",
+        ]),
+      },
+    ]);
+  }
 
   return (
     <>
       <div className="callout">
-        A new communication notifies the <b>responsible team</b> first. If nobody closes it and the status stays open, automatic escalation starts once it is overdue, then notifies everyone on the next level after the wait on the chain (24 hours when wait hours is blank). <b>Next level</b> sends that level now. <b>Responded by</b> and <b>Responded on</b> record who acted and when.
+        Communications and licenses are separate. Use <b>Source</b> to switch. Communication escalations start after the responsible team does not close an overdue case. License and contract escalations are expiry reminders on documents.
       </div>
       <div className="kpis">
-        <Kpi acc="var(--bronze)" label="All escalations" value={rows.length} detail="Communications and licenses" onClick={() => { setSource("All"); setResponse("All"); }} />
-        <Kpi acc="var(--bad)" label="No response" value={waiting.length} detail="Owner is still accountable" onClick={() => setResponse("No response")} />
+        <Kpi acc="var(--bronze)" label="All escalations" value={filtered.length} detail={scope} onClick={() => { setSource("All"); setResponse("All"); setCategory("All"); setStatus("All"); setCriticality("All"); }} />
+        <Kpi acc="var(--bad)" label="No response" value={waiting.length} detail="Still waiting for a reply" onClick={() => setResponse("No response")} />
         <Kpi acc="var(--info)" label="Communications" value={commCount} detail="Cases escalated or overdue" onClick={() => setSource("Communication")} />
         <Kpi acc="var(--warn)" label="Licenses" value={docCount} detail="Renewals escalated or expired" onClick={() => setSource("License")} />
       </div>
       <div className="filters">
         <FilterField label="Search" className="ffld-search">
           <input type="search" placeholder="Search record, owner, or who responded" value={q} onChange={(e) => setQ(e.target.value)} />
+        </FilterField>
+        <FilterField label="From">
+          <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+        </FilterField>
+        <FilterField label="To">
+          <input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+        </FilterField>
+        <FilterField label="Category">
+          <select value={category} onChange={(e) => setCategory(e.target.value)}>
+            <option>All</option>
+            {CATS.map((cat) => <option key={cat}>{cat}</option>)}
+          </select>
+        </FilterField>
+        <FilterField label="Status">
+          <select value={status} onChange={(e) => setStatus(e.target.value)}>
+            <option>All</option>
+            <option>Open</option>
+            <option>Closed</option>
+          </select>
         </FilterField>
         <FilterField label="Source">
           <select value={source} onChange={(e) => setSource(e.target.value as SourceFilter)}>
@@ -165,7 +242,16 @@ export function SystemEscalationCenter({
             <option>Responded</option>
           </select>
         </FilterField>
-        <span className="fnote">{filtered.length} shown</span>
+        {showLicenses ? (
+          <FilterField label="License criticality">
+            <select value={criticality} onChange={(e) => setCriticality(e.target.value)}>
+              <option>All</option>
+              {PRIORITY_BANDS.map((level) => <option key={level}>{level}</option>)}
+            </select>
+          </FilterField>
+        ) : null}
+        <button className="btn btn-outline" type="button" onClick={exportExcel}>{exportLabel(from, to)}</button>
+        <span className="fnote">{filtered.length} shown · {scope}</span>
       </div>
       <DataTable
         cols={["Source", "Record", "Owner", "Escalated to", "Escalated on", "Escalated by", "Responded by", "Responded on", "Accountability", ""]}

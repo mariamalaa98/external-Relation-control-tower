@@ -159,7 +159,7 @@ export function DataTable({
             rows.map((r) => (
               <tr key={r.key} className={r.legal ? "legal-row" : undefined} onClick={r.onClick}>
                 {r.cells.map((cell, i) => (
-                  <td key={i}>{cell}</td>
+                  <td key={i} data-label={typeof cols[i] === "string" ? cols[i] : `Column ${i + 1}`}>{cell}</td>
                 ))}
               </tr>
             ))
@@ -197,14 +197,14 @@ export function Overlay({
 }) {
   return (
     <>
-      <div className="scrim open" onClick={onClose} />
-      <div className={`${kind} open`}>
+      <div className="scrim open" onClick={onClose} aria-hidden="true" />
+      <div className={`${kind} open`} role="dialog" aria-modal="true" aria-label={title}>
         <div className="dh">
           <div>
             <div className="t">{title}</div>
             {sub ? <div className="s">{sub}</div> : null}
           </div>
-          <button className="x" type="button" onClick={onClose}>×</button>
+          <button className="x" type="button" onClick={onClose} aria-label="Close dialog" title="Close dialog">×</button>
         </div>
         <div className="db">{children}</div>
         {footer ? <div className="df">{footer}</div> : null}

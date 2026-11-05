@@ -85,12 +85,7 @@ export const SEED: Store = {
     { id: "R4", name: "Licence renewal keyword", basis: "Keyword", value: "license renewal, تجديد ترخيص", category: "Regulatory", owner: "Mona ElSayed", priority: "High", active: false },
     { id: "R5", name: "Accreditation body routing", basis: "Domain", value: "gahar.gov.eg", category: "Regulatory", owner: "Yasser Mahmoud", priority: "High", active: true },
   ] satisfies RoutingRule[],
-  escalationRules: [
-    { id: "E1", trigger: "SLA breached", afterDays: 0, level: "L1", escalateTo: "Supervisor / BU Manager", channels: "Teams + Email + TMS", active: true },
-    { id: "E2", trigger: "L1 unresolved", afterDays: 2, level: "L2", escalateTo: "Executive (Dr. Bassam Farid)", channels: "Teams + Email", active: true },
-    { id: "E3", trigger: "Legal category breach", afterDays: 0, level: "L2", escalateTo: "Executive + Legal Affairs", channels: "Teams + Email + TMS", active: true },
-    { id: "E4", trigger: "Renewal overdue", afterDays: 7, level: "L1", escalateTo: "Department Head", channels: "Email + TMS", active: true },
-  ] satisfies EscalationRule[],
+  escalationRules: [] satisfies EscalationRule[],
   escalationChains: [],
   parties: [
     p("P1", "National Health Insurance Authority", "Government", "correspondence@nhia.gov.eg", "nhia.gov.eg", BU[3], "Ahmed Salah", "High", "Active", "Government Relations"),

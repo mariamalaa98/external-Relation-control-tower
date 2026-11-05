@@ -3,7 +3,6 @@ import {
   BUS,
   LICENSE_RENEWAL_STATUSES,
   type License,
-  type Notice,
   type Renewal,
 } from "../data/types";
 import {
@@ -18,7 +17,6 @@ import {
   downloadLicenseFile,
   escalateLicense,
   formatDateTime,
-  markNoticeRead,
   matchesSearch,
   reopenDoc,
   sameId,
@@ -26,109 +24,9 @@ import {
   uploadLicenseFile,
   useStore,
 } from "../data/store";
-import { noticeDuty, formatAuditStamp } from "../data/auditLogic";
 import { downloadBytes, mimeFromFileName } from "../data/emailAttachments";
 import { DataTable, FilterField, Kpi, Overlay, PageHead, flagBadge, priBadge, statusBadge } from "./widgets";
 import { ArchiveUploadForm } from "./archive";
-
-export function NotificationCenter({
-  q,
-  setQ,
-  busy,
-  onOpenDoc,
-}: {
-  q: string;
-  setQ: (v: string) => void;
-  busy: boolean;
-  onOpenDoc: (doc: License) => void;
-}) {
-  const db = useStore();
-  const [type, setType] = useState("All");
-  const [read, setRead] = useState("Unread");
-  const [response, setResponse] = useState("All");
-  const withDuty = useMemo(() => db.notices.map((n) => ({ notice: n, duty: noticeDuty(n, db.docs, db.renewals) })), [db.notices, db.docs, db.renewals]);
-  const filtered = useMemo(() => withDuty.filter(({ notice: n, duty }) => {
-    const hit = `${n.title} ${n.documentName || ""} ${n.message || ""} ${n.owner} ${duty.respondedBy}`.toLowerCase().includes(q.toLowerCase());
-    const typeOk = type === "All" || n.type === type;
-    const readOk = read === "All" || (read === "Unread" ? !n.isRead : n.isRead);
-    const responseOk = response === "All" || (response === "Responded" ? duty.responded : !duty.responded);
-    return hit && typeOk && readOk && responseOk;
-  }), [withDuty, q, type, read, response]);
-  const unanswered = withDuty.filter((row) => !row.duty.responded).length;
-
-  function openRelated(n: Notice) {
-    const doc = db.docs.find((d) => d.recordId === n.documentId || d.id === n.documentId);
-    if (doc) onOpenDoc(doc);
-  }
-
-  return (
-    <>
-      <div className="callout">
-        <b>Notification log</b> records reminder, expiry, and escalation events. <b>Responded by</b> and <b>Responded on</b> show who acted and when. If there is no response, the <b>responsible person</b> stays accountable.
-      </div>
-      <div className="filters">
-        <FilterField label="Search" className="ffld-search">
-          <input type="search" placeholder="Search title, document, owner" value={q} onChange={(e) => setQ(e.target.value)} />
-        </FilterField>
-        <FilterField label="Type">
-          <select value={type} onChange={(e) => setType(e.target.value)}>
-            <option>All</option>
-            <option>Reminder</option>
-            <option>Expiry</option>
-            <option>Escalation</option>
-          </select>
-        </FilterField>
-        <FilterField label="Read">
-          <select value={read} onChange={(e) => setRead(e.target.value)}>
-            <option>All</option>
-            <option>Unread</option>
-            <option>Read</option>
-          </select>
-        </FilterField>
-        <FilterField label="Response">
-          <select value={response} onChange={(e) => setResponse(e.target.value)}>
-            <option>All</option>
-            <option>No response</option>
-            <option>Responded</option>
-          </select>
-        </FilterField>
-        <span className="fnote">{filtered.length} shown · {unanswered} with no response</span>
-      </div>
-      <DataTable
-        cols={["Sent", "Type", "Title", "Document", "Responsible", "Responded by", "Responded on", "Accountability", ""]}
-        rows={filtered.map(({ notice: n, duty }) => ({
-          key: n.recordId || n.id,
-          onClick: () => openRelated(n),
-          cells: [
-            <span className="mono" key="s">{formatDateTime(n.sentOn)}</span>,
-            statusBadge(n.type),
-            <>{n.isRead ? n.title : <b>{n.title}</b>}</>,
-            n.documentName || "—",
-            duty.responded ? (duty.responsible || "—") : <span className="accountable" key="who">{duty.responsible || "Unassigned"}</span>,
-            duty.respondedBy || "—",
-            duty.respondedAt ? <span className="mono" key="at">{formatAuditStamp(duty.respondedAt) || formatDateTime(duty.respondedAt)}</span> : "—",
-            <span key="duty" className={`badge ${duty.responded ? "b-ok" : "b-bad"}`}>{duty.responded ? "Responded" : "No response"}</span>,
-            n.isRead
-              ? statusBadge("Read")
-              : (
-                <button
-                  className="btn btn-outline btn-mini"
-                  type="button"
-                  disabled={busy}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    void markNoticeRead(n.id);
-                  }}
-                >
-                  Mark read
-                </button>
-              ),
-          ],
-        }))}
-      />
-    </>
-  );
-}
 
 export function LicenseEscalationPanel({
   q,
@@ -601,7 +499,7 @@ export function LicenseCreateForm({ onCancel, onSave }: { onCancel: () => void; 
         <Field label="Document URL" hint="Max 100 characters">
           <input name="documentUrl" maxLength={100} placeholder="https://" />
         </Field>
-        <Field label="Current document">
+        <Field label="Current document" hint="Saved after the record is created. Leave empty if you only have a URL.">
           <input name="file" type="file" />
         </Field>
 

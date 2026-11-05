@@ -61,6 +61,8 @@ export type RoutingRule = {
   active: boolean;
 };
 
+export const ESCALATION_CHANNELS = "Teams + Email";
+
 export type EscalationRule = {
   id: string;
   trigger: string;
@@ -100,6 +102,8 @@ export type Party = {
   department?: string;
   departmentId?: string;
   owner: string;
+  /** Person on the external party, when the record owner is a team account. */
+  supervisor?: string;
   criticality: "High" | "Medium" | "Low";
   status: "Draft" | "Active" | "Inactive";
   escalationTeam?: string;
@@ -168,6 +172,8 @@ export type Communication = {
   subj: string;
   owner: string;
   ownerId?: string;
+  /** Dataverse created-by, kept so a team owner can fall back to a person. */
+  createdBy?: string;
   sup: string;
   pri: Priority;
   rec: string;

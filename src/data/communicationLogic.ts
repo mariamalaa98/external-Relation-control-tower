@@ -4,7 +4,7 @@ import { FLOWS, matchesAutoEscalationFilter } from "./flows";
 /** Used when a chain row has no erc_waithours, matching the cloud flow. */
 export const DEFAULT_LEVEL_WAIT_HOURS = 24;
 /** Local preview cap when no Esclation Chain rows are loaded. */
-const LOCAL_CHAIN_LEVELS = 5;
+export const LOCAL_CHAIN_LEVELS = 4;
 
 /** Prototype stand-in only. Live overdue is the Dataverse formula column erc_isoverdue (Created On + 2 hours). */
 export const OVERDUE_HOURS = 2;
@@ -85,9 +85,28 @@ export function hasFollowingLevel(currentStep: number, chains: EscalationChain[]
   return rows.some((row) => row.sequence === currentStep + 1 && !!row.userId);
 }
 
-function waitHoursForLevel(level: number, chains: EscalationChain[], teamId?: string) {
+export function waitHoursForLevel(level: number, chains: EscalationChain[] = [], teamId?: string) {
   const hours = activeChain(chains, teamId).find((row) => row.sequence === level && row.waitHours && row.waitHours > 0)?.waitHours;
   return hours || DEFAULT_LEVEL_WAIT_HOURS;
+}
+
+export function peopleAtLevel(chains: EscalationChain[] = [], level: number, teamId?: string) {
+  return activeChain(chains, teamId)
+    .filter((row) => row.sequence === level && row.userName)
+    .map((row) => row.userName as string);
+}
+
+export function chainLevelNumbers(chains: EscalationChain[] = [], teamId?: string) {
+  const seqs = [...new Set(activeChain(chains, teamId).map((row) => row.sequence))].filter((n) => n > 0).sort((a, b) => a - b);
+  return seqs.length ? seqs : Array.from({ length: LOCAL_CHAIN_LEVELS }, (_, i) => i + 1);
+}
+
+export function chainLevelLabel(chains: EscalationChain[] = [], level: number, teamId?: string) {
+  const people = peopleAtLevel(chains, level, teamId);
+  if (people.length) return people.join(", ");
+  const named = activeChain(chains, teamId).find((row) => row.sequence === level)?.name;
+  if (named && named !== `Level ${level}`) return named;
+  return `Level ${level}`;
 }
 
 function levelAdvance(row: Communication, at: Date, chains: EscalationChain[], teamId?: string) {

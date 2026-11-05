@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
 import { SEED } from "./seed";
 import type { ArchiveDoc, ArchiveType, AuditAction, AuditChannel, AuditRow, BusinessUnitRef, Category, CommStatus, Communication, DepartmentRef, EmailAttachment, EscalationRule, EvidenceFile, IntakeEmail, License, Notice, NoticeType, Party, Priority, Renewal, RoutingRule, SlaRule, Store, ThreadEmail } from "./types";
+import { ESCALATION_CHANNELS } from "./types";
 import {
   addDays,
   asPriority,
@@ -77,9 +78,11 @@ import {
   manualEscalationPatch,
   parseDate,
   responsibleTeamOf,
+  peopleAtLevel,
   toIso,
   withTeamNotification,
 } from "./communicationLogic";
+import { presentablePerson, recordPerson } from "./auditLogic";
 import { MAILBOX_MAHA, MAILBOX_PROD, CENTRAL_MAILBOX_ADDRESSES } from "./types";
 import { EmailsService } from "../generated/services/EmailsService";
 import { ActivitypartiesService } from "../generated/services/ActivitypartiesService";
@@ -106,6 +109,7 @@ import type { Erc_licenseandcontractsBase } from "../generated/models/Erc_licens
 import type { Erc_notificationsBase } from "../generated/models/Erc_notificationsModel";
 import type { Erc_renewalsBase } from "../generated/models/Erc_renewalsModel";
 import { attachmentsFromEmailRecord, emailGetOptions, fetchAttachmentContent, listAttachmentsForEmails, mimeFromFileName } from "./emailAttachments";
+import { uploadDataverseFileColumn } from "./dataverseFile";
 
 let store: Store = {
   source: "local",
@@ -694,11 +698,22 @@ function withPartyCategory(row: Communication, party?: Party): Communication {
   return { ...row, cat: party.category, categoryAssigned: true };
 }
 
-function fillPartyDisplay(row: Communication, parties: Party[] = store.parties): Communication {
+function withDocumentPerson(doc: License, parties: Party[] = store.parties, chains = store.escalationChains): License {
+  if (presentablePerson(doc.owner)) return doc;
+  const party = parties.find((item) => (doc.partyId && sameId(item.id, doc.partyId)) || partyNameEquals(item.name, doc.party));
+  const person = presentablePerson(party?.owner)
+    || presentablePerson(party?.supervisor)
+    || presentablePerson(peopleAtLevel(chains, 1, party?.escalationTeamId)[0])
+    || "";
+  return person ? { ...doc, owner: person } : { ...doc, owner: "" };
+}
+
+function fillPartyDisplay(row: Communication, parties: Party[] = store.parties, chains = store.escalationChains): Communication {
   const withOwner = (next: Communication, party?: Party) => {
     const named = withPartyCategory(next, party);
-    if (String(named.owner || "").trim() || !party?.owner) return named;
-    return { ...named, owner: party.owner };
+    if (presentablePerson(named.owner)) return named;
+    const person = recordPerson(named, party, chains);
+    return person ? { ...named, owner: person } : { ...named, owner: "" };
   };
   if (row.partyId) {
     const match = parties.find((p) => sameId(p.id, row.partyId) || partyNameEquals(p.name, row.party));
@@ -1087,10 +1102,18 @@ function withTimeout<T>(work: Promise<T>, ms: number, label: string) {
 
 const ADMIN_RULES_KEY = "erc-admin-rules-v1";
 
+const DUMMY_ESCALATION_IDS = new Set(["E1", "E2", "E3", "E4"]);
+
+function sanitizeEscalationRules(rows: EscalationRule[]) {
+  return rows
+    .filter((row) => !DUMMY_ESCALATION_IDS.has(row.id))
+    .map((row) => ({ ...row, channels: ESCALATION_CHANNELS }));
+}
+
 function savedAdminRules(): { routingRules: RoutingRule[]; escalationRules: EscalationRule[] } {
   const fallback = {
     routingRules: structuredClone(SEED.routingRules),
-    escalationRules: structuredClone(SEED.escalationRules),
+    escalationRules: [] as EscalationRule[],
   };
   try {
     const raw = localStorage.getItem(ADMIN_RULES_KEY);
@@ -1098,7 +1121,7 @@ function savedAdminRules(): { routingRules: RoutingRule[]; escalationRules: Esca
     const parsed = JSON.parse(raw) as { routingRules?: RoutingRule[]; escalationRules?: EscalationRule[] };
     return {
       routingRules: Array.isArray(parsed.routingRules) ? parsed.routingRules : fallback.routingRules,
-      escalationRules: Array.isArray(parsed.escalationRules) ? parsed.escalationRules : fallback.escalationRules,
+      escalationRules: sanitizeEscalationRules(Array.isArray(parsed.escalationRules) ? parsed.escalationRules : []),
     };
   } catch {
     return fallback;
@@ -1137,7 +1160,7 @@ export function removeRoutingRule(id: string) {
 }
 
 export function addEscalationRule(input: Omit<EscalationRule, "id">) {
-  const row: EscalationRule = { ...input, id: `E${Date.now()}` };
+  const row: EscalationRule = { ...input, id: `E${Date.now()}`, channels: ESCALATION_CHANNELS };
   store = { ...store, escalationRules: [...store.escalationRules, row] };
   persistAdminRules();
   emit();
@@ -1361,8 +1384,8 @@ export async function hydrate(useDataverse: boolean) {
     ...savedAdminRules(),
     parties,
     escalationChains,
-    comms: applyArchiveMeta(mappedComms.map((row) => fillPartyDisplay(row, parties)), archives, audits),
-    docs,
+    comms: applyArchiveMeta(mappedComms.map((row) => fillPartyDisplay(row, parties, escalationChains)), archives, audits),
+    docs: docs.map((row) => withDocumentPerson(row, parties, escalationChains)),
     renewals,
     notices,
     archives,
@@ -1725,8 +1748,21 @@ export async function addDoc(input: Omit<License, "id" | "recordId">, file?: Fil
       row.recordId = created.data.erc_licenseandcontractid;
       Object.assign(row, await docFromDataverse(created.data.erc_licenseandcontractid, row));
       if (file) {
-        await Erc_licenseandcontractsService.upload(row.recordId, "erc_currentdocument", file, file.name);
-        Object.assign(row, await docFromDataverse(row.recordId, { ...row, currentDocumentName: file.name }));
+        try {
+          await uploadDataverseFileColumn({
+            entityLogicalName: "erc_licenseandcontract",
+            entitySetName: "erc_licenseandcontracts",
+            recordId: row.recordId,
+            attribute: "erc_currentdocument",
+            file,
+          });
+          Object.assign(row, await docFromDataverse(row.recordId, { ...row, currentDocumentName: file.name }));
+        } catch (err) {
+          const detail = err instanceof Error ? err.message : "unknown error";
+          store = { ...store, docs: [row, ...store.docs] };
+          emit();
+          throw new Error(`Document created, but the file could not be attached. ${detail} Open the record and upload the file again.`);
+        }
       }
     }
   } else {
@@ -1771,7 +1807,13 @@ export async function uploadLicenseFile(id: string, file: File) {
   const current = findDoc(id);
   if (!current) throw new Error("Document not found");
   if (store.source === "dataverse" && isGuid(current.recordId)) {
-    await Erc_licenseandcontractsService.upload(current.recordId, "erc_currentdocument", file, file.name);
+    await uploadDataverseFileColumn({
+      entityLogicalName: "erc_licenseandcontract",
+      entitySetName: "erc_licenseandcontracts",
+      recordId: current.recordId,
+      attribute: "erc_currentdocument",
+      file,
+    });
     const fresh = await docFromDataverse(current.recordId, { ...current, currentDocumentName: file.name });
     return replaceDoc(fresh);
   }
@@ -2029,7 +2071,7 @@ export async function tickFormulas(now = new Date()) {
         store.audits,
       ).map((row) => fillPartyDisplay(row, partyList));
       const docs = (docRows.data || []).flatMap((row) => {
-        try { return [applyLicenseFormulas(withOrgNames(mapDoc(row)))]; } catch { return []; }
+        try { return [applyLicenseFormulas(withDocumentPerson(withOrgNames(mapDoc(row)), partyList))]; } catch { return []; }
       });
       const notices = (noticeRows.data || []).flatMap((row) => {
         try { return [mapNotice(row)]; } catch { return []; }
@@ -2247,7 +2289,13 @@ export async function addArchive(input: {
       row.id = row.recordId;
       if (input.file) {
         try {
-          await Erc_documentarchivesService.upload(row.recordId, "erc_file", input.file, input.file.name);
+          await uploadDataverseFileColumn({
+            entityLogicalName: "erc_documentarchive",
+            entitySetName: "erc_documentarchives",
+            recordId: row.recordId,
+            attribute: "erc_file",
+            file: input.file,
+          });
           row.fileName = input.file.name;
         } catch (err) {
           const detail = err instanceof Error ? err.message : "unknown error";
@@ -2459,6 +2507,7 @@ async function createRenewalTask(doc: License): Promise<Renewal> {
 
 async function logNotice(type: NoticeType, doc: License, renewal?: Renewal) {
   const days = doc.daysRemaining ?? 0;
+  const ownerId = store.source === "dataverse" ? await userIdByName(doc.owner) : undefined;
   const row: Notice = {
     id: nextLocalNoticeId(),
     recordId: "",
@@ -2485,6 +2534,7 @@ async function logNotice(type: NoticeType, doc: License, renewal?: Renewal) {
       erc_isread: false,
       "erc_LicenseandContract@odata.bind": `/erc_licenseandcontracts(${doc.recordId})`,
       ...(renewal && isGuid(renewal.recordId) ? { "erc_Renewal@odata.bind": `/erc_renewals(${renewal.recordId})` } : {}),
+      ...(ownerId ? { "ownerid@odata.bind": `/systemusers(${ownerId})` } : {}),
     } as Omit<Erc_notificationsBase, "erc_notificationid">);
     if (created.data) {
       row.recordId = created.data.erc_notificationid;

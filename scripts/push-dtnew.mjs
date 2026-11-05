@@ -38,7 +38,7 @@ const next = {
 writeFileSync(configPath, JSON.stringify(next, null, 2) + "\n");
 let code = 1;
 try {
-  const result = spawnSync("power-apps", ["push", "-s", solutionId], {
+  const result = spawnSync("pa", ["app", "push", "--non-interactive", "-s", solutionId], {
     cwd: root,
     stdio: "inherit",
     shell: true,

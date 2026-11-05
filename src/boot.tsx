@@ -1,7 +1,9 @@
 import { Component, StrictMode, type ErrorInfo, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App.tsx";
+import { PulseFrame } from "./pulseNav.tsx";
 import "./styles.css";
+import "./synapse-shell.css";
 
 class RootError extends Component<{ children: ReactNode }, { message: string }> {
   state = { message: "" };
@@ -31,7 +33,9 @@ export function renderApp() {
   createRoot(el).render(
     <StrictMode>
       <RootError>
-        <App />
+        <PulseFrame>
+          <App />
+        </PulseFrame>
       </RootError>
     </StrictMode>,
   );

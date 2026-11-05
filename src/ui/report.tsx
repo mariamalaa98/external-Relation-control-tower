@@ -2,62 +2,24 @@ import { useMemo, useState } from "react";
 import {
   PRIORITY_BANDS,
   commAuditRow,
+  formatAuditStamp,
   groupReplies,
   inDateRange,
+  noticeBelongsToLicense,
   noticeDuty,
   noticeSubject,
-  priorityBand,
+  openClosedCounts,
   responsibilityByLevel,
   type AuditFact,
   type LevelResponsibility,
   type PersonLoad,
   type ReplyGroup,
 } from "../data/auditLogic";
+import { downloadExcel, exportFileName, exportLabel, rangeText } from "../data/excelExport";
 import { CATS, type AuditRow, type Communication, type License, type Notice, type Party, type Renewal, type ThreadEmail } from "../data/types";
 import { DataTable, FilterField, Kpi, PageHead, catBadge, priBadge } from "./widgets";
 
-const AREAS = ["All", "Communications", "License notifications"] as const;
-
-function csvCell(value: string) {
-  const text = (value || "").replace(/\r?\n/g, " ").trim();
-  return /[",]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
-}
-
-function downloadCsv(name: string, sections: { name: string; cols: string[]; rows: string[][] }[]) {
-  const lines: string[] = [];
-  for (const section of sections) {
-    lines.push(csvCell(section.name));
-    lines.push(section.cols.map(csvCell).join(","));
-    for (const row of section.rows) lines.push(row.map(csvCell).join(","));
-    lines.push("");
-  }
-  const blob = new Blob([`\uFEFF${lines.join("\r\n")}`], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = name;
-  link.click();
-  URL.revokeObjectURL(url);
-}
-
-function rangeText(from: string, to: string) {
-  if (from && to) return `${from} to ${to}`;
-  if (from) return `from ${from}`;
-  if (to) return `through ${to}`;
-  return "all dates";
-}
-
-function exportName(from: string, to: string) {
-  if (!from && !to) return "report-all-dates.csv";
-  return `report-${from || "start"}_to_${to || "end"}.csv`;
-}
-
-function exportLabel(from: string, to: string) {
-  if (from && to) return `Export ${from} → ${to}`;
-  if (from) return `Export from ${from}`;
-  if (to) return `Export through ${to}`;
-  return "Export all dates";
-}
+const AREAS = ["Communications", "Licenses and contracts"] as const;
 
 function namesOf(people: PersonLoad[]) {
   return people.map((person) => person.name).join("; ");
@@ -130,11 +92,9 @@ function ReplyDashboard({
 function ResponsibilityBoard({
   title,
   groups,
-  onPick,
 }: {
   title: string;
   groups: LevelResponsibility[];
-  onPick?: (level: string) => void;
 }) {
   const rows = groups.flatMap((group) => {
     const counts = () => [
@@ -146,13 +106,11 @@ function ResponsibilityBoard({
     if (!group.people.length) {
       return [{
         key: group.level,
-        onClick: onPick ? () => onPick(group.level) : undefined,
         cells: [...counts(), "—", "0", "0"],
       }];
     }
     return group.people.map((person) => ({
       key: `${group.level}-${person.name}`,
-      onClick: onPick ? () => onPick(group.level) : undefined,
       cells: [
         ...counts(),
         personCell(person.name, person.open > 0),
@@ -185,6 +143,13 @@ function categoryExport(groups: ReplyGroup[]) {
   ]);
 }
 
+function keepFact(fact: AuditFact, category: string, status: string, criticality = "All") {
+  const statusOk = status === "All" || (status === "Open" ? !fact.closed : fact.closed);
+  return statusOk
+    && (category === "All" || fact.group === category)
+    && (criticality === "All" || fact.level === criticality);
+}
+
 function responsibilityExport(groups: LevelResponsibility[]) {
   const blank: PersonLoad = { name: "", sent: 0, replied: 0, open: 0 };
   return groups.flatMap((group) => (group.people.length ? group.people : [blank]).map((person) => [
@@ -196,11 +161,6 @@ function responsibilityExport(groups: LevelResponsibility[]) {
     String(person.open),
     String(person.replied),
   ]));
-}
-
-function keepFact(fact: AuditFact, category: string, criticality: string) {
-  return (category === "All" || fact.group === category)
-    && (criticality === "All" || fact.level === criticality);
 }
 
 export function ReportScreen({
@@ -223,29 +183,42 @@ export function ReportScreen({
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [category, setCategory] = useState("All");
+  const [status, setStatus] = useState("All");
   const [criticality, setCriticality] = useState("All");
-  const [area, setArea] = useState<(typeof AREAS)[number]>("All");
+  const [area, setArea] = useState<(typeof AREAS)[number]>("Communications");
+
+  const commRows = useMemo(() => {
+    return comms
+      .map((comm) => commAuditRow(comm, audits, threads, parties))
+      .filter((row) => inDateRange(row.receivedAt, from, to));
+  }, [comms, audits, threads, parties, from, to]);
 
   const commFacts = useMemo(() => {
     const facts: AuditFact[] = [];
-    for (const comm of comms) {
-      const row = commAuditRow(comm, audits, threads);
-      if (!inDateRange(row.receivedAt, from, to)) continue;
+    for (const row of commRows) {
       const fact: AuditFact = {
         group: row.category,
-        level: priorityBand(row.source.pri),
+        level: row.category,
         replied: !!row.responseAt,
+        closed: row.closed,
         owner: row.owner || "Unassigned",
-        respondedBy: row.respondedBy || row.owner || "",
+        mustReply: row.mustReply || row.owner || "Unassigned",
+        respondedBy: row.respondedBy || row.mustReply || row.owner || "",
       };
-      if (keepFact(fact, category, criticality)) facts.push(fact);
+      if (keepFact(fact, category, status)) facts.push(fact);
     }
     return facts;
-  }, [comms, audits, threads, from, to, category, criticality]);
+  }, [commRows, category, status]);
+
+  const filteredCommRows = useMemo(() => commRows.filter((row) => {
+    const statusOk = status === "All" || (status === "Open" ? !row.closed : row.closed);
+    return statusOk && (category === "All" || row.category === category);
+  }), [commRows, category, status]);
 
   const noticeFacts = useMemo(() => {
     const facts: AuditFact[] = [];
     for (const notice of notices) {
+      if (!noticeBelongsToLicense(notice, docs)) continue;
       if (!inDateRange(notice.sentOn, from, to)) continue;
       const duty = noticeDuty(notice, docs, renewals);
       const subject = noticeSubject(notice, docs, parties);
@@ -253,70 +226,76 @@ export function ReportScreen({
         group: subject.category,
         level: subject.criticality,
         replied: duty.responded,
-        owner: duty.responsible || "Unassigned",
+        closed: duty.responded,
+        owner: duty.owner || duty.responsible || "Unassigned",
+        mustReply: duty.mustReply || duty.responsible || "Unassigned",
         respondedBy: duty.respondedBy || duty.responsible || "",
       };
-      if (keepFact(fact, category, criticality)) facts.push(fact);
+      if (keepFact(fact, category, status, criticality)) facts.push(fact);
     }
     return facts;
-  }, [notices, docs, renewals, parties, from, to, category, criticality]);
+  }, [notices, docs, renewals, parties, from, to, category, status, criticality]);
 
-  const showComms = area !== "License notifications";
-  const showNotices = area !== "Communications";
+  const showComms = area === "Communications";
+  const showNotices = area === "Licenses and contracts";
   const categoryOrder = category === "All" ? CATS : [category];
   const levelOrder = criticality === "All" ? PRIORITY_BANDS : [criticality];
   const commByCategory = useMemo(() => groupReplies(commFacts, categoryOrder), [commFacts, categoryOrder]);
-  const commByLevel = useMemo(() => responsibilityByLevel(commFacts, levelOrder), [commFacts, levelOrder]);
   const noticeByCategory = useMemo(() => groupReplies(noticeFacts, categoryOrder), [noticeFacts, categoryOrder]);
   const noticeByLevel = useMemo(() => responsibilityByLevel(noticeFacts, levelOrder), [noticeFacts, levelOrder]);
+  const volume = useMemo(() => openClosedCounts(filteredCommRows), [filteredCommRows]);
   const scope = rangeText(from, to);
 
-  function exportCsv() {
+  function exportExcel() {
     const sections: { name: string; cols: string[]; rows: string[][] }[] = [
       {
-        name: `Report filters — ${scope}`,
-        cols: ["From", "To", "Category", "Criticality", "Records"],
-        rows: [[from || "All dates", to || "All dates", category, criticality, area]],
+        name: "Filters",
+        cols: ["From", "To", "Category", "Status", "Records", "Open", "Closed", "Not replied"],
+        rows: [[from || "All dates", to || "All dates", category, status, area, String(volume.open), String(volume.closed), String(volume.unreplied)]],
       },
     ];
     if (showComms) {
       sections.push(
         {
-          name: `Communications by category — ${scope}`,
-          cols: ["Category", "Communications sent", "Answered", "Still open", "Persons replied", "Who replied", "Persons not replied", "Who has not replied"],
-          rows: categoryExport(commByCategory),
+          name: "Communications",
+          cols: ["CommID", "Party", "Category", "Owner", "Must reply", "Replied by", "Not replied", "Status", "Received"],
+          rows: filteredCommRows.map((row) => [
+            row.commId, row.party, row.category, row.owner, row.mustReply,
+            row.respondedBy || "No response", row.accountable || "", row.status,
+            formatAuditStamp(row.receivedAt),
+          ]),
         },
         {
-          name: `Communication criticality — ${scope}`,
-          cols: ["Criticality", "Sent", "Replied", "Not replied", "Responsible", "Still open", "Replied by them"],
-          rows: responsibilityExport(commByLevel),
+          name: "By category",
+          cols: ["Category", "Communications sent", "Answered", "Still open", "Persons replied", "Who replied", "Persons not replied", "Who has not replied"],
+          rows: categoryExport(commByCategory),
         },
       );
     }
     if (showNotices) {
       sections.push(
         {
-          name: `License notifications by category — ${scope}`,
+          name: "License notifications",
           cols: ["Category", "Notifications sent", "Answered", "Still open", "Persons replied", "Who replied", "Persons not replied", "Who has not replied"],
           rows: categoryExport(noticeByCategory),
         },
         {
-          name: `License criticality — ${scope}`,
+          name: "License criticality",
           cols: ["Criticality", "Sent", "Replied", "Not replied", "Responsible", "Still open", "Replied by them"],
           rows: responsibilityExport(noticeByLevel),
         },
       );
     }
-    downloadCsv(exportName(from, to), sections);
+    downloadExcel(exportFileName("report", from, to), sections);
   }
 
   return (
     <>
       <PageHead title="Report" sub={`Counts follow the filters · ${scope}`}>
-        <button className="btn btn-outline" type="button" onClick={exportCsv}>{exportLabel(from, to)}</button>
+        <button className="btn btn-outline" type="button" onClick={exportExcel}>{exportLabel(from, to)}</button>
       </PageHead>
       <div className="callout">
-        Choose the dates, category, criticality, and which records to include. Every total on this page, and the export, uses that same filter. Click a category or a criticality to narrow the report.
+        Communications and licenses are separate. Choose <b>Communications</b> or <b>Licenses and contracts</b>, then a type such as Insurance and a date range. Export Excel uses the same filters.
       </div>
       <div className="filters">
         <FilterField label="From">
@@ -331,10 +310,11 @@ export function ReportScreen({
             {CATS.map((cat) => <option key={cat}>{cat}</option>)}
           </select>
         </FilterField>
-        <FilterField label="Criticality">
-          <select value={criticality} onChange={(e) => setCriticality(e.target.value)}>
+        <FilterField label="Status">
+          <select value={status} onChange={(e) => setStatus(e.target.value)}>
             <option>All</option>
-            {PRIORITY_BANDS.map((level) => <option key={level}>{level}</option>)}
+            <option>Open</option>
+            <option>Closed</option>
           </select>
         </FilterField>
         <FilterField label="Records">
@@ -342,8 +322,16 @@ export function ReportScreen({
             {AREAS.map((name) => <option key={name}>{name}</option>)}
           </select>
         </FilterField>
+        {showNotices ? (
+          <FilterField label="License criticality">
+            <select value={criticality} onChange={(e) => setCriticality(e.target.value)}>
+              <option>All</option>
+              {PRIORITY_BANDS.map((level) => <option key={level}>{level}</option>)}
+            </select>
+          </FilterField>
+        ) : null}
         <span className="fnote">
-          {showComms ? `${commFacts.length} communications` : ""}
+          {showComms ? `${filteredCommRows.length} communications` : ""}
           {showComms && showNotices ? " · " : ""}
           {showNotices ? `${noticeFacts.length} notifications` : ""}
           {" · "}{scope}
@@ -351,31 +339,30 @@ export function ReportScreen({
       </div>
       {showComms && (
         <>
+          <div className="kpis">
+            <Kpi acc="var(--info)" label={`${category === "All" ? "All types" : category} open`} value={volume.open} detail="Not closed" onClick={() => setStatus("Open")} />
+            <Kpi acc="var(--ok)" label="Closed" value={volume.closed} detail="Closed in this filter" onClick={() => setStatus("Closed")} />
+            <Kpi acc="var(--bad)" label="Not replied" value={volume.unreplied} detail={`${volume.openUnreplied} open with no reply`} />
+          </div>
           <ReplyDashboard
             title={`Communications by category · ${scope}`}
             sentLabel="Communications sent"
             groups={commByCategory}
             onPick={(key) => { if ((CATS as readonly string[]).includes(key)) setCategory(key); }}
           />
-          <ResponsibilityBoard
-            title={`Communication criticality and who is responsible · ${scope}`}
-            groups={commByLevel}
-            onPick={(level) => { if ((PRIORITY_BANDS as readonly string[]).includes(level)) setCriticality(level); }}
-          />
         </>
       )}
       {showNotices && (
         <>
           <ReplyDashboard
-            title={`License notifications by category · ${scope}`}
+            title={`License and contract notifications by category · ${scope}`}
             sentLabel="Notifications sent"
             groups={noticeByCategory}
             onPick={(key) => { if ((CATS as readonly string[]).includes(key)) setCategory(key); }}
           />
           <ResponsibilityBoard
-            title={`License criticality and who is responsible · ${scope}`}
+            title={`License and contract criticality · ${scope}`}
             groups={noticeByLevel}
-            onPick={(level) => { if ((PRIORITY_BANDS as readonly string[]).includes(level)) setCriticality(level); }}
           />
         </>
       )}

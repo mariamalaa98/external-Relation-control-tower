@@ -3,7 +3,6 @@ import { BUS, CATS, MATCH_BASES, OWNERS, PRIS, SUPS, type Category, type Escalat
 import {
   addEscalationRule,
   addRoutingRule,
-  addSlaRule,
   removeRoutingRule,
   setEscalationRuleActive,
   setRoutingRuleActive,
@@ -11,8 +10,8 @@ import {
 } from "../data/store";
 import { DataTable, Overlay, PageHead, catBadge, priBadge } from "./widgets";
 
-type AdminTab = "routing" | "sla" | "escalation";
-type AdminModal = "routing" | "sla" | "escalation" | null;
+type AdminTab = "routing" | "escalation";
+type AdminModal = "routing" | "escalation" | null;
 
 const REGIONS = ["EGY", "KSA"] as const;
 const FUNCTIONS = ["External Correspondence"] as const;
@@ -71,12 +70,10 @@ export function AdminConfiguration({
   busy,
   onRefresh,
   onDone,
-  onFail,
 }: {
   busy?: boolean;
   onRefresh: () => void;
   onDone: (msg: string) => void;
-  onFail: (msg: string) => void;
 }) {
   const db = useStore();
   const [tab, setTab] = useState<AdminTab>("routing");
@@ -107,22 +104,16 @@ export function AdminConfiguration({
         db.routingRules.map((row) => [row.name, row.basis, row.value, row.category, row.owner, row.priority, row.active ? "Yes" : "No"]));
       return;
     }
-    if (tab === "sla") {
-      downloadCsv(`sla-matrix-${today}.csv`,
-        ["Category", "Priority", "Acknowledge (hrs)", "Resolve (days)", "Basis"],
-        db.sla.map((row) => [row.category, row.priority, String(row.ackHours), String(row.resolveDays), row.basis]));
-      return;
-    }
     downloadCsv(`escalation-rules-${today}.csv`,
       ["Trigger", "After", "Level", "Escalate to", "Channels", "Active"],
       db.escalationRules.map((row) => [row.trigger, `${row.afterDays} days`, row.level, row.escalateTo, row.channels, row.active ? "Yes" : "No"]));
   }
 
-  const addLabel = tab === "routing" ? "New Rule" : tab === "sla" ? "New SLA Matrix" : "New Escalation Rule";
+  const addLabel = tab === "routing" ? "New Rule" : "New Escalation Rule";
 
   return (
     <>
-      <PageHead title="Admin Configuration" sub="Routing, SLA and escalation configuration">
+      <PageHead title="Admin Configuration" sub="Routing and escalation configuration">
         <button className="btn btn-ghost" type="button" disabled={busy} onClick={onRefresh}>↻ Refresh</button>
         <button className="btn btn-outline" type="button" onClick={exportCsv}>Export CSV</button>
         <button className="btn btn-primary" type="button" onClick={() => setModal(tab)}>+ {addLabel}</button>
@@ -156,12 +147,11 @@ export function AdminConfiguration({
       </div>
 
       <div className="callout">
-        Configuration is admin-only. Routing rules resolve top to bottom and pre-fill Process inbound email. SLA rows are the targets used when a communication is matched. All values resolve for <b>{unitLabel} — {region}</b>.
+        Configuration is admin-only. Routing rules resolve top to bottom and pre-fill Process inbound email. All values resolve for <b>{unitLabel} — {region}</b>.
       </div>
 
       <div className="tabs">
         <button type="button" className={tab === "routing" ? "on" : ""} onClick={() => setTab("routing")}>Routing Rules</button>
-        <button type="button" className={tab === "sla" ? "on" : ""} onClick={() => setTab("sla")}>SLA Matrix</button>
         <button type="button" className={tab === "escalation" ? "on" : ""} onClick={() => setTab("escalation")}>Escalation Rules</button>
       </div>
 
@@ -179,22 +169,6 @@ export function AdminConfiguration({
               priBadge(row.priority),
               <Switch key="sw" on={row.active} label={`${row.name} active`} onClick={() => setRoutingRuleActive(row.id, !row.active)} />,
               <button key="x" className="row-x" type="button" aria-label={`Remove ${row.name}`} onClick={() => { removeRoutingRule(row.id); onDone(`${row.name} removed`); }}>×</button>,
-            ],
-          }))}
-        />
-      )}
-
-      {tab === "sla" && (
-        <DataTable
-          cols={["Category", "Priority", "Acknowledge (hrs)", "Resolve (days)", "Basis"]}
-          rows={db.sla.map((row) => ({
-            key: row.id,
-            cells: [
-              catBadge(row.category),
-              priBadge(row.priority),
-              row.ackHours,
-              row.resolveDays,
-              row.basis,
             ],
           }))}
         />
@@ -222,14 +196,6 @@ export function AdminConfiguration({
           busy={!!busy}
           onClose={() => setModal(null)}
           onSaved={(name) => { setModal(null); onDone(`${name} added`); }}
-        />
-      )}
-      {modal === "sla" && (
-        <SlaForm
-          busy={!!busy}
-          onClose={() => setModal(null)}
-          onSaved={(name) => { setModal(null); onDone(`${name} added to the SLA matrix`); }}
-          onFail={onFail}
         />
       )}
       {modal === "escalation" && (
@@ -298,77 +264,6 @@ function RoutingForm({ busy, onClose, onSaved }: { busy: boolean; onClose: () =>
         </div>
         <div className="df" style={{ margin: "16px -20px -20px", borderRadius: 0 }}>
           <button className="btn btn-primary" type="submit" disabled={busy}>Add rule</button>
-          <button className="btn btn-outline" type="button" onClick={onClose}>Cancel</button>
-        </div>
-      </form>
-    </Overlay>
-  );
-}
-
-function SlaForm({
-  busy,
-  onClose,
-  onSaved,
-  onFail,
-}: {
-  busy: boolean;
-  onClose: () => void;
-  onSaved: (name: string) => void;
-  onFail: (msg: string) => void;
-}) {
-  const [saving, setSaving] = useState(false);
-  async function submit(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    const f = new FormData(e.currentTarget);
-    const category = String(f.get("category") || "Government") as Category;
-    const priority = String(f.get("priority") || "High") as Priority;
-    const ackHours = Number(f.get("ack"));
-    const resolveDays = Number(f.get("resolve"));
-    const basis = String(f.get("basis") || "Working days") as "Working days" | "Calendar days" | "Hours";
-    if (!Number.isFinite(ackHours) || ackHours < 0 || !Number.isFinite(resolveDays) || resolveDays < 1) {
-      onFail("Acknowledge hours and resolve days are required");
-      return;
-    }
-    setSaving(true);
-    try {
-      const row = await addSlaRule({ category, priority, ackHours, resolveDays, basis, active: true });
-      onSaved(row.name);
-    } catch (err) {
-      onFail(err instanceof Error ? err.message : "Could not save the SLA matrix row");
-    } finally {
-      setSaving(false);
-    }
-  }
-  return (
-    <Overlay kind="modal" title="New SLA matrix" sub="Category and priority targets used when a communication is matched" onClose={onClose} footer={null}>
-      <form onSubmit={(e) => void submit(e)}>
-        <div className="mdf" style={{ border: "none", padding: 0 }}>
-          <Field label="Category" required>
-            <select name="category" defaultValue="Government">
-              {CATS.map((cat) => <option key={cat}>{cat}</option>)}
-            </select>
-          </Field>
-          <Field label="Priority" required>
-            <select name="priority" defaultValue="Critical">
-              {PRIS.map((pri) => <option key={pri}>{pri}</option>)}
-            </select>
-          </Field>
-          <Field label="Acknowledge (hrs)" required>
-            <input name="ack" type="number" min={0} step={1} required defaultValue={4} />
-          </Field>
-          <Field label="Resolve (days)" required>
-            <input name="resolve" type="number" min={1} step={1} required defaultValue={2} />
-          </Field>
-          <Field label="Basis" required>
-            <select name="basis" defaultValue="Working days">
-              <option>Working days</option>
-              <option>Calendar days</option>
-              <option>Hours</option>
-            </select>
-          </Field>
-        </div>
-        <div className="df" style={{ margin: "16px -20px -20px", borderRadius: 0 }}>
-          <button className="btn btn-primary" type="submit" disabled={busy || saving}>Add SLA matrix</button>
           <button className="btn btn-outline" type="button" onClick={onClose}>Cancel</button>
         </div>
       </form>

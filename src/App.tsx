@@ -1,4 +1,5 @@
 ﻿import { Component, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { openPulseNavigation } from "./pulseNav.tsx";
 import {
   BUS,
   CATS,
@@ -34,11 +35,8 @@ import {
   reopenComm,
   respondToComm,
   routeEmail,
-  runAutomaticEscalation,
-  runLicenseMonitor,
   tickFormulas,
   slaState,
-  summarizeMonitor,
   unreadNotices,
   useStore,
   matchesSearch,
@@ -50,14 +48,15 @@ import {
   loadCommunicationById,
   parseCommunicationDeepLink,
 } from "./data/store";
-import { DataTable, FilterField, Kpi, Overlay, OrgFilterFields, PageHead, catBadge, flagBadge, priBadge, statusBadge } from "./ui/widgets";
+import { DataTable, FilterField, Overlay, OrgFilterFields, PageHead, catBadge, flagBadge, priBadge, statusBadge } from "./ui/widgets";
 import { CloseCommForm, CommRecordForm } from "./ui/communication";
-import { LicenseCreateForm, LicenseRecordForm, LicenseTracker, NotificationCenter, RenewalTaskTable, RiskMatrix } from "./ui/license";
-import { AdminConfiguration } from "./ui/admin";
+import { LicenseCreateForm, LicenseRecordForm, LicenseTracker, RenewalTaskTable, RiskMatrix } from "./ui/license";
 import { SystemEscalationCenter } from "./ui/escalation";
 import { DocumentArchiveScreen } from "./ui/archive";
 import { CommunicationAuditScreen, NotificationAuditScreen } from "./ui/audit";
+import { ExecutiveDashboard } from "./ui/dashboard";
 import { ReportScreen } from "./ui/report";
+import { Archive, BarChart3, Bell, BriefcaseBusiness, CalendarDays, ClipboardCheck, FileText, FolderArchive, LayoutDashboard, ListChecks, Mail, Moon, Network, Search, ShieldAlert, Sun, UsersRound } from "lucide-react";
 
 const NAV = [
   { area: "ops", group: "COMMAND CENTER", items: [
@@ -83,9 +82,6 @@ const NAV = [
     { id: "escalation", ico: "▲", text: "Escalation Center" },
     { id: "notifications", ico: "🔔", text: "Notification Center" },
   ]},
-  { area: "gov", group: "ADMIN", items: [
-    { id: "admin", ico: "⚙", text: "Admin Configuration" },
-  ]},
   { area: "gov", group: "REPORTS", items: [
     { id: "reports", ico: "📊", text: "Report" },
   ]},
@@ -107,6 +103,28 @@ const AREAS = [
 type ScreenId = (typeof NAV)[number]["items"][number]["id"];
 type AreaId = (typeof AREAS)[number]["id"];
 const LATER: ScreenId[] = [];
+
+function NavIcon({ id }: { id: ScreenId }) {
+  const icons: Partial<Record<ScreenId, typeof LayoutDashboard>> = {
+    dashboard: LayoutDashboard,
+    pending: ClipboardCheck,
+    intake: Mail,
+    tracker: ListChecks,
+    legal: ShieldAlert,
+    licenses: FileText,
+    renewals: CalendarDays,
+    risk: BarChart3,
+    draftParties: UsersRound,
+    parties: Network,
+    archive: FolderArchive,
+    escalation: Bell,
+    notifications: Bell,
+    reports: BarChart3,
+    auditComm: Archive,
+  };
+  const Icon = icons[id] || BriefcaseBusiness;
+  return <Icon size={18} strokeWidth={1.7} aria-hidden="true" />;
+}
 
 function dashboardMissing(opts: {
   live: boolean;
@@ -190,10 +208,9 @@ export default function App() {
   const [drawer, setDrawer] = useState<Communication | null>(null);
   const [calMonth, setCalMonth] = useState(() => TODAY.slice(0, 7));
   const [calView, setCalView] = useState<"cal" | "list">("cal");
-  const [noticeView, setNoticeView] = useState<"log" | "audit">("log");
   const [orgBu, setOrgBu] = useState("All");
   const [orgDept, setOrgDept] = useState("All");
-  const [navOpen, setNavOpen] = useState(false);
+  const [darkMode, setDarkMode] = useState(false);
   const lastDeepLink = useRef("");
 
   useEffect(() => {
@@ -211,9 +228,13 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    document.body.style.overflow = navOpen ? "hidden" : "";
-    return () => { document.body.style.overflow = ""; };
-  }, [navOpen]);
+    document.documentElement.classList.toggle("dark-mode", darkMode);
+    document.documentElement.style.colorScheme = darkMode ? "dark" : "light";
+    return () => {
+      document.documentElement.classList.remove("dark-mode");
+      document.documentElement.style.colorScheme = "light";
+    };
+  }, [darkMode]);
 
   async function openFromDeepLink(guid: string) {
     const clean = guid.replace(/[{}]/g, "").toLowerCase();
@@ -249,7 +270,6 @@ export default function App() {
     if (found) setArea(found.area);
     setScreen(id);
     setQ("");
-    setNavOpen(false);
   }
   function ping(msg: string) {
     setToast(msg);
@@ -283,19 +303,8 @@ export default function App() {
     () => db.docs.filter((d) => docMatchesOrg(d, orgBu, orgDept, db.parties, db.businessUnits, db.departments)),
     [db.docs, db.parties, db.businessUnits, db.departments, orgBu, orgDept],
   );
-  const openComms = scopedComms.filter((c) => c.status !== "Closed");
   const pending = db.comms.filter((c) => c.status !== "Closed" && (c.status === "In Progress" || !c.isEscalated));
-  const breached = openComms.filter((c) => c.isOverdue || slaState(c) === "Breached");
-  const expiring = scopedDocs.filter((d) => {
-    const s = docState(d);
-    return s === "Expiring" || s === "Expired";
-  });
-  const closed = scopedComms.filter((c) => c.status === "Closed");
-  const compliance = closed.length
-    ? Math.round((closed.filter((c) => slaState(c) === "Within").length / closed.length) * 100)
-    : 0;
   const live = db.source === "dataverse";
-  const kpi = (n: number) => (db.ready && live ? n : "—");
   const missing = dashboardMissing({
     live,
     ready: db.ready,
@@ -305,66 +314,101 @@ export default function App() {
     docs: scopedDocs,
     parties: scopedParties,
   });
-  const assignedCats = CATS.map((cat) => ({ cat, n: scopedComms.filter((c) => c.categoryAssigned && c.cat === cat).length }));
-  const unassignedCat = scopedComms.filter((c) => !c.categoryAssigned).length;
-  const catCounts = live ? [...assignedCats, ...(unassignedCat ? [{ cat: "Unassigned" as const, n: unassignedCat }] : [])] : assignedCats;
-  const maxCat = Math.max(...catCounts.map((x) => x.n), 1);
   const unprocessed = db.intake.filter((x) => x.status !== "Routed");
-  const unreadNoticeCount = unreadNotices(db.notices || []).length;
+  const unreadNoticeCount = unreadNotices((db.notices || []).filter((n) => scopedDocs.some((d) => d.recordId === n.documentId || d.id === n.documentId || (!!n.documentName && d.name === n.documentName)))).length;
   const overdueDocs = scopedDocs.filter((d) => d.isOverdue && !d.done);
   const liveDrawer = drawer ? db.comms.find((c) => c.id === drawer.id || c.recordId === drawer.recordId) || drawer : null;
+  const areaLabel = AREAS.find((item) => item.id === area)?.label ?? "";
+  const screenLabel = NAV.flatMap((group) => [...group.items]).find((item) => item.id === screen)?.text ?? "";
+  const railItems = NAV.filter((group) => group.area === area).flatMap((group) => [...group.items]);
 
   return (
     <>
-      <header>
-        <button type="button" className="nav-toggle" aria-label="Open menu" onClick={() => setNavOpen(true)}>☰</button>
-        <span className="brand">Andalusia Pulse</span>
-        <div className="toptabs">
-          {AREAS.map((a) => (
-            <button
-              key={a.id}
-              className={`toptab${area === a.id ? " on" : ""}`}
-              onClick={() => {
-                setArea(a.id);
-                setScreen(NAV.find((g) => g.area === a.id)!.items[0].id);
-              }}
-            >
-              {a.label}
-            </button>
-          ))}
-        </div>
-        <div className="hdr-right">
-          <div className="avatar">MA</div>
-        </div>
-      </header>
-      <div className={`nav-scrim${navOpen ? " open" : ""}`} onClick={() => setNavOpen(false)} />
-      <div className="shell">
-        <aside className={navOpen ? "open" : ""}>
-          <div className="profile">
-            <div className="ini">ER</div>
-            <div>
-              <div className="t">External Relations</div>
-              <div className="r">Control Tower</div>
-            </div>
-            <button type="button" className="nav-close" aria-label="Close menu" onClick={() => setNavOpen(false)}>×</button>
-          </div>
-          {NAV.filter((g) => g.area === area).map((g) => (
-            <div key={g.group}>
-              <div className="grouplabel">{g.group}</div>
-              {g.items.map((i) => (
-                <button key={i.id} className={`nav${screen === i.id ? " active" : ""}`} onClick={() => go(i.id)}>
-                  <span className="ico">{i.ico}</span>
-                  <span>{i.text}</span>
-                  {i.id === "intake" && unprocessed.length > 0 ? <span className="dot" /> : null}
-                  {i.id === "notifications" && unreadNoticeCount > 0 ? <span className="dot" /> : null}
-                  {i.id === "escalation" && overdueDocs.length > 0 ? <span className="dot" /> : null}
-                </button>
+      <div className="page-stage">
+        <div className="ambient ambient-one" />
+        <div className="ambient ambient-two" />
+        <div className="app-shell">
+          <aside className="sidebar">
+            <nav className="sidebar-nav" aria-label={areaLabel}>
+              {railItems.map((item) => (
+                <div className="nav-item-wrap" key={item.id}>
+                  <button
+                    type="button"
+                    className={`icon-button${screen === item.id ? " is-active" : ""}`}
+                    aria-label={item.text}
+                    aria-current={screen === item.id ? "page" : undefined}
+                    onClick={() => go(item.id)}
+                  >
+                    <NavIcon id={item.id} />
+                    {item.id === "intake" && unprocessed.length > 0 ? <i className="rail-dot" /> : null}
+                    {item.id === "notifications" && unreadNoticeCount > 0 ? <i className="rail-dot" /> : null}
+                    {item.id === "escalation" && overdueDocs.length > 0 ? <i className="rail-dot" /> : null}
+                  </button>
+                  <span>{item.text}</span>
+                </div>
               ))}
+            </nav>
+            <button type="button" className="brand-mark" title="Andalusia Pulse" aria-label="Open Andalusia Pulse" onClick={openPulseNavigation}>
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="m12 3 8.5 4.6L12 12.2 3.5 7.6 12 3Z" />
+                <path d="m3.5 12 8.5 4.6L20.5 12" />
+                <path d="m3.5 16.4 8.5 4.6 8.5-4.6" />
+              </svg>
+            </button>
+          </aside>
+          <header className="topbar">
+            <div className="brand-lockup">
+              <strong>Andalusia Pulse</strong>
+              <small>External Relations</small>
             </div>
-          ))}
-        </aside>
-        <main>
-          {!LATER.includes(screen) && screen !== "admin" && !["pending", "intake", "tracker", "legal"].includes(screen) ? (
+            <div className="topbar-context">
+              <strong>{screenLabel}</strong>
+              <span>{areaLabel}</span>
+            </div>
+            <div className="topbar-actions">
+              <div className="header-search" role="search">
+                <Search size={16} strokeWidth={1.8} aria-hidden="true" />
+                <input type="search" aria-label="Search communications" placeholder="Search communications..." value={q} onChange={(event) => setQ(event.target.value)} />
+              </div>
+              <div className="area-switch" role="tablist" aria-label="Areas">
+                {AREAS.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={area === item.id}
+                    className={area === item.id ? "is-active" : ""}
+                    onClick={() => {
+                      setArea(item.id);
+                      setScreen(NAV.find((group) => group.area === item.id)!.items[0].id);
+                      setQ("");
+                    }}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+              <button
+                type="button"
+                className="theme-switch"
+                aria-label={darkMode ? "Switch to light mode" : "Switch to dark mode"}
+                aria-pressed={darkMode}
+                onClick={() => setDarkMode((value) => !value)}
+              >
+                <span className={darkMode ? "" : "theme-active"}><Sun size={15} strokeWidth={1.8} aria-hidden="true" /></span>
+                <span className={darkMode ? "theme-active" : ""}><Moon size={15} strokeWidth={1.8} aria-hidden="true" /></span>
+              </button>
+              <div className="profile-chip">
+                <div className="profile-avatar">MA</div>
+                <div>
+                  <strong>{ME}</strong>
+                  <span>External Relations</span>
+                </div>
+              </div>
+            </div>
+          </header>
+          <main className="app-content">
+          {!LATER.includes(screen) && !["pending", "intake", "tracker", "legal"].includes(screen) ? (
             <div className="filters org-filters">
               <OrgFilterFields
                 businessUnits={orgOpts.businessUnits}
@@ -382,68 +426,20 @@ export default function App() {
           ) : null}
 
           {screen === "dashboard" && (
-            <>
-              <PageHead
-                title="Executive Dashboard"
-                sub={db.ready
-                  ? (live
-                    ? `${scopedComms.length} communications · ${scopedDocs.length} documents · live Dataverse`
-                    : "Live Dataverse is not connected")
-                  : "Loading Dataverse…"}
-              >
-                <button className="btn btn-outline" type="button" disabled={busy} onClick={() => run("Register refreshed", refresh)}>Refresh</button>
-              </PageHead>
-              {missing.length ? (
-                <div className={`banner ${live && db.ready ? "warn" : "warn"}`}>
-                  {live && db.ready
-                    ? <>Some live data is incomplete:</>
-                    : <>Dashboard is waiting on real Dataverse data:</>}
-                  <ul className="gaps">
-                    {missing.map((item) => <li key={item}>{item}</li>)}
-                  </ul>
-                </div>
-              ) : (
-                <div className="callout">Figures below are counted from live Dataverse communications, licenses, renewals, and notifications.</div>
-              )}
-              <div className="kpis">
-                <Kpi acc="var(--bronze)" label="Total Communications" value={kpi(scopedComms.length)} detail={live ? "erc_communications" : "Waiting for Dataverse"} onClick={() => go("tracker")} />
-                <Kpi acc="var(--info)" label="In Progress" value={kpi(openComms.length)} detail="Not closed" onClick={() => go("pending")} />
-                <Kpi acc="var(--bad)" label="Overdue" value={kpi(breached.length)} detail="Is OverDue column" onClick={() => go("escalation")} />
-                <Kpi acc="var(--ok)" label="SLA Compliance" value={db.ready && live ? `${compliance}%` : "—"} detail={closed.length ? "Closed records" : "No closed records yet"} />
-                <Kpi acc="var(--warn)" label="Renewals Due" value={kpi(expiring.length)} detail="Within 90 days / expired" onClick={() => go("renewals")} />
-                <Kpi acc="var(--bad)" label="Expired licenses" value={kpi(overdueDocs.length)} detail="Expiry reached, not renewed" onClick={() => go("escalation")} />
-                <Kpi acc="var(--info)" label="Unread notices" value={kpi(unreadNoticeCount)} detail="Reminder / expiry / escalation" onClick={() => go("notifications")} />
-              </div>
-              <div className="two">
-                <div className="card chartcard">
-                  <h3>Communications by Category</h3>
-                  <div className="cs">{live ? "From erc_CategoryF on live records" : "Unavailable until Dataverse is connected"}</div>
-                  <div className="bars">
-                    {catCounts.map((x) => (
-                      <div className="bar" key={x.cat} onClick={() => go("tracker")}>
-                        <b>{live ? x.n : "—"}</b>
-                        <i style={{ height: `${live ? (x.n / maxCat) * 70 + 8 : 8}%`, background: x.cat === "Unassigned" ? "var(--warn)" : "var(--bronze)" }} />
-                        <span>{x.cat.slice(0, 3)}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-                <div className="card chartcard">
-                  <h3>SLA mix</h3>
-                  <div className="cs">{live ? `Closed-item compliance ${compliance}%` : "Unavailable until Dataverse is connected"}</div>
-                  <div className="donutwrap">
-                    <div className="donut" data-pct={live ? `${compliance}%` : "—"} style={{ background: live
-                      ? `conic-gradient(var(--ok) 0 ${compliance}%, var(--gold) ${compliance}% ${Math.min(100, compliance + 10)}%, var(--bad) ${Math.min(100, compliance + 10)}% 100%)`
-                      : "var(--line)" }} />
-                    <div className="legend">
-                      <div><i style={{ background: "var(--ok)" }} /> Within SLA</div>
-                      <div><i style={{ background: "var(--gold)" }} /> At risk</div>
-                      <div><i style={{ background: "var(--bad)" }} /> Breached</div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </>
+            <ExecutiveDashboard
+              live={live}
+              ready={db.ready}
+              missing={missing}
+              comms={scopedComms}
+              docs={scopedDocs}
+              notices={db.notices}
+              audits={db.audits}
+              threads={db.threadByComm}
+              parties={db.parties}
+              busy={busy}
+              onRefresh={() => void run("Register refreshed", refresh)}
+              go={go}
+            />
           )}
 
           {screen === "pending" && (
@@ -486,27 +482,7 @@ export default function App() {
 
           {screen === "escalation" && (
             <>
-              <PageHead title="Escalation Center" sub="Every escalation on communications and licenses, with who responded and when">
-                <button
-                  className="btn btn-outline"
-                  type="button"
-                  disabled={busy}
-                  onClick={() => run(
-                    db.source === "dataverse" ? "Refreshed from Dataverse (auto flow runs every 10 minutes)" : "Automatic escalation ran",
-                    runAutomaticEscalation,
-                  )}
-                >
-                  {db.source === "dataverse" ? "Refresh from auto flow" : "Run automatic escalation"}
-                </button>
-                <button
-                  className="btn btn-outline"
-                  type="button"
-                  disabled={busy}
-                  onClick={() => run("Expiry monitor ran", async () => summarizeMonitor(await runLicenseMonitor()))}
-                >
-                  Run expiry monitor
-                </button>
-              </PageHead>
+              <PageHead title="Escalation Center" sub="Filter by type and dates, then export Excel for that period" />
               <SystemEscalationCenter
                 q={q}
                 setQ={setQ}
@@ -598,7 +574,6 @@ export default function App() {
           {screen === "licenses" && (
             <>
               <PageHead title="License & Contract Tracker" sub={`${scopedDocs.length} documents`}>
-                <button className="btn btn-outline" type="button" disabled={busy} onClick={() => run("Expiry monitor ran", async () => summarizeMonitor(await runLicenseMonitor()))}>Run expiry monitor</button>
                 <button className="btn btn-primary" type="button" onClick={() => setModal({ kind: "doc" })}>New Document</button>
               </PageHead>
               <LicenseTracker
@@ -634,45 +609,17 @@ export default function App() {
           )}
 
           {screen === "notifications" && (
-            <>
-              <div className="toggle" style={{ marginBottom: 14 }}>
-                <button className={noticeView === "log" ? "on" : ""} type="button" onClick={() => setNoticeView("log")}>Notices</button>
-                <button className={noticeView === "audit" ? "on" : ""} type="button" onClick={() => setNoticeView("audit")}>Renewal audit</button>
-              </div>
-              {noticeView === "log" ? (
-                <>
-                  <PageHead title="Notification Center" sub={`${db.notices.length} logged events · ${unreadNoticeCount} unread · response time is recorded against the responsible person`}>
-                    <button className="btn btn-outline" type="button" disabled={busy} onClick={() => run("Expiry monitor ran", async () => summarizeMonitor(await runLicenseMonitor()))}>Run expiry monitor</button>
-                  </PageHead>
-                  <NotificationCenter
-                    q={q}
-                    setQ={setQ}
-                    busy={busy}
-                    onOpenDoc={(doc) => setModal({ kind: "docDetail", doc })}
-                  />
-                </>
-              ) : (
-                <NotificationAuditScreen
-                  q={q}
-                  setQ={setQ}
-                  docs={scopedDocs}
-                  notices={db.notices}
-                  renewals={db.renewals}
-                  parties={db.parties}
-                  busy={busy}
-                  onOpen={(doc) => setModal({ kind: "docDetail", doc })}
-                  onRefresh={() => void run("Refreshed", () => refresh())}
-                  onDone={ping}
-                  onFail={ping}
-                />
-              )}
-            </>
-          )}
-
-          {screen === "admin" && (
-            <AdminConfiguration
+            <NotificationAuditScreen
+              q={q}
+              setQ={setQ}
+              docs={scopedDocs}
+              notices={db.notices}
+              renewals={db.renewals}
+              parties={db.parties}
+              chains={db.escalationChains}
               busy={busy}
-              onRefresh={() => void run("Refreshed", () => refresh())}
+              unreadCount={unreadNoticeCount}
+              onOpen={(doc) => setModal({ kind: "docDetail", doc })}
               onDone={ping}
               onFail={ping}
             />
@@ -692,6 +639,8 @@ export default function App() {
               comms={scopedComms}
               audits={db.audits}
               threads={db.threadByComm}
+              parties={db.parties}
+              chains={db.escalationChains}
               busy={busy}
               onOpen={setDrawer}
               onRefresh={() => void run("Refreshed", () => refresh())}
@@ -709,7 +658,8 @@ export default function App() {
               parties={scopedParties}
             />
           )}
-        </main>
+          </main>
+        </div>
       </div>
 
       {liveDrawer && (
